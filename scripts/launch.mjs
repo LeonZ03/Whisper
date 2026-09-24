@@ -29,12 +29,12 @@ const stopToken = randomBytes(32).toString('hex');
 const pipe = process.platform === 'win32' ? '\\\\.\\pipe\\whisper-' + createHash('sha256').update(dataDir).digest('hex').slice(0, 16) : resolve(dataDir, 'control.sock');
 function cliText() {
   if (!cliRelease) return 'CLI installer unavailable. Run npm.cmd run build:cli on the host.\n';
-  const note = publicUrl ? 'Share these CLI commands with your friend (no invite code included).\n' : 'LOCAL ONLY: 127.0.0.1 is not reachable from another computer.\n';
+  const note = publicUrl ? 'Share these CLI commands with your friend; registration requires owner approval.\n' : 'LOCAL ONLY: 127.0.0.1 is not reachable from another computer.\n';
   return note + cliInstructions(publicUrl || app.localUrl, cliRelease);
 }
 function persist() {
   writeFileSync(runtimeFile, JSON.stringify({ pid: process.pid, tunnelPid: tunnel?.pid || null, pipe, stopToken, localUrl: app.localUrl, publicUrl, instance: app.instance }, null, 2), { mode: 0o600 });
-  writeFileSync(resolve(dataDir, 'access-info.txt'), `Whisper 当前访问信息\n\n本机地址：${app.localUrl}\n临时地址：${publicUrl || (noTunnel ? '仅本机模式' : '尚未连通，请查看启动窗口')}\n邀请码：${app.inviteCode}\n\n这是同一个本机服务。不要公开分享邀请码。\n停止：双击工程根目录 stop.cmd\n安全说明：本实验版未经安全审计，无法防截图、无法保证完全匿名。\n`, 'utf8');
+  writeFileSync(resolve(dataDir, 'access-info.txt'), `Whisper 当前访问信息\n\n本机地址：${app.localUrl}\n临时地址：${publicUrl || (noTunnel ? '仅本机模式' : '尚未连通，请查看启动窗口')}\n\n这是同一个本机服务。新账号提交申请后需 root 审批。\n停止：双击工程根目录 stop.cmd\n安全说明：本实验版未经安全审计，无法防截图、无法保证完全匿名。\n`, 'utf8');
   appendFileSync(resolve(dataDir, 'access-info.txt'), '\n' + cliText(), 'utf8');
   writeFileSync(resolve(dataDir, 'cli-commands.txt'), cliText(), 'utf8');
   writeFileSync(resolve(dataDir, 'public-url.txt'), (publicUrl || '') + '\n');
@@ -69,7 +69,7 @@ console.log('\n============================================================');
 console.log('  Whisper · 双人加密聊天实验版');
 console.log('============================================================');
 console.log('  本机地址：' + app.localUrl);
-console.log('  邀请码：  ' + app.inviteCode);
+console.log('  新账号：  提交申请后由网站 root 审批');
 console.log('  停止方式：双击 stop.cmd，或在本窗口按 Ctrl+C');
 console.log('  地址记录：data\\access-info.txt');
 console.log('  请勿发送敏感信息；阅后清理无法防截图。');

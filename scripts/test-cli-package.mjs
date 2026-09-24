@@ -37,6 +37,7 @@ try {
   delete cleanEnv.NODE_PATH; delete cleanEnv.NODE_OPTIONS; delete cleanEnv.WHISPER_SERVER;
   assert.notEqual(spawnSync(join(process.env.SystemRoot, 'System32/where.exe'), ['node'], { env: cleanEnv, cwd: client }).status, 0);
   assert.match(execFileSync(join(client, 'runtime/node.exe'), ['--input-type=module', '-e', "import {ready,deriveCredentials,wipe} from './src/crypto.mjs'; await ready; const c=await deriveCredentials('Portable-Crypto-Test!2026','AAAAAAAAAAAAAAAAAAAAAA=='); if(c.authKey.length!==32) throw Error('crypto'); wipe(c.authKey);wipe(c.vaultKey);console.log('PORTABLE_CRYPTO_OK')"], { cwd: client, env: cleanEnv, encoding: 'utf8' }), /PORTABLE_CRYPTO_OK/);
+  assert.match(execFileSync(join(client, 'runtime/node.exe'), ['--input-type=module', '-e', "import {validateNewPassword} from './src/account-client.mjs'; if(validateNewPassword('密码')!==2) throw Error('account'); console.log('PORTABLE_ACCOUNT_OK')"], { cwd: client, env: cleanEnv, encoding: 'utf8' }), /PORTABLE_ACCOUNT_OK/);
   const result = spawnSync(process.execPath, ['--test', '--test-force-exit', 'tests/cli-tty.test.mjs'], { cwd: root, env: cleanEnv, stdio: 'inherit', timeout: 110000 });
   assert.equal(result.status, 0, 'Extracted client must pass real PowerShell terminal tests without Node or npm in PATH.');
   mkdirSync(join(root, 'test-results'), { recursive: true });

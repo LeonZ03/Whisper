@@ -6,21 +6,25 @@ import { join } from 'node:path';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { createWhisperServer } from '../server/app.mjs';
 const random = (n) => randomBytes(n).toString('base64');
-test('邀请门禁、认证、CSRF、固定双人权限、密文存储、阅后原子清理、删除、过期', async () => {
+test('申请审批、认证、CSRF、固定双人权限、密文存储、阅后原子清理、删除、过期', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'whisper-api-test-')); const app = await createWhisperServer({ port: 0, dataDir: dir });
   const url = app.localUrl;
   async function request(path, method = 'GET', body, cookie, origin = url) {
     const res = await fetch(url + path, { method, headers: { ...(method !== 'GET' ? { 'Content-Type': 'application/json', 'X-Whisper-Request': '1', Origin: origin } : {}), ...(cookie ? { Cookie: cookie } : {}) }, body: method === 'GET' ? undefined : JSON.stringify(body ?? {}) });
     return { status: res.status, data: await res.json(), cookie: res.headers.get('set-cookie')?.split(';')[0], headers: res.headers };
   }
-  const registration = (username) => ({ username, invite: app.inviteCode, authKey: random(32), publicKey: random(32), salt: random(16), vault: { nonce: random(24), ciphertext: random(48) } });
+  const registration = (username) => ({ username, authKey: random(32), publicKey: random(32), salt: random(16), passwordLength: 8, vault: { nonce: random(24), ciphertext: random(48) } });
   try {
     assert.equal((await request('/api/health')).status, 200);
     assert.equal((await request('/api/conversations')).status, 401);
-    const bad = registration('blocked'); bad.invite = 'wrong'; assert.equal((await request('/api/auth/register', 'POST', bad)).status, 403);
     const inputs = ['alice', 'bobby', 'carol'].map(registration); const users = [];
-    for (const input of inputs) { const result = await request('/api/auth/register', 'POST', input); assert.equal(result.status, 201); users.push(result); }
-    const [a, b, c] = users;
+    for (const input of inputs) { const result = await request('/api/auth/register', 'POST', input); assert.equal(result.status, 202); users.push(result); }
+    assert.equal((await request('/api/auth/login', 'POST', { username: 'alice', authKey: inputs[0].authKey })).status, 403);
+    for (const username of ['alice', 'bobby', 'carol']) app.db.prepare("UPDATE users SET status='active', reviewed_at=? WHERE username=? AND status='pending'").run(Date.now(), username);
+    const loggedIn = [];
+    for (const input of inputs) loggedIn.push(await request('/api/auth/login', 'POST', { username: input.username, authKey: input.authKey }));
+    const [a, b, c] = loggedIn;
+    assert.deepEqual([a.status,b.status,c.status],[200,200,200]);
     assert.equal((await request('/api/auth/login', 'POST', { username: 'alice', authKey: random(32) })).status, 401);
     assert.equal((await request('/api/auth/login', 'POST', { username: 'alice', authKey: inputs[0].authKey })).status, 200);
     assert.equal((await request('/api/conversations', 'POST', { username: 'bobby' }, a.cookie, 'https://evil.example')).status, 403);
@@ -49,6 +53,7 @@ test('邀请门禁、认证、CSRF、固定双人权限、密文存储、阅后�
     const expired = { ...msg, id: randomUUID(), expiresAt: Date.now() - 1 }; assert.equal((await request(`/api/conversations/${id}/messages`, 'POST', expired, a.cookie)).status, 400);
     assert.ok((await request('/api/health')).headers.get('content-security-policy').includes("frame-ancestors 'none'"));
     const dbBytes = readFileSync(join(dir, 'whisper.sqlite')); assert.equal(dbBytes.includes(Buffer.from(inputs[0].authKey)), false);
+    assert.equal((await request('/api/admin/members', 'GET', undefined, a.cookie)).status, 403);
     assert.equal((await request('/api/auth/logout', 'POST', {}, a.cookie)).status, 200);
     assert.equal((await request('/api/conversations', 'GET', undefined, a.cookie)).status, 401);
   } finally { await app.close(); rmSync(dir, { recursive: true, force: true }); }

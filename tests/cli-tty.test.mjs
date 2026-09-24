@@ -24,7 +24,7 @@ test('CLI rejects redirected input; help still works', () => {
 });
 test('PowerShell + ConPTY: register, masked secrets, live chat, Chinese, paste, delete, resize, exit', { skip: process.platform !== 'win32', timeout: 90000 }, async () => {
   const dir = mkdtempSync(join(tmpdir(), 'whisper-cli-tty-')), app = await createWhisperServer({ dataDir: join(dir, 'db'), port: 0 });
-  const bob = new WhisperClient({ server: app.localUrl }), password = 'TTY-Only-Fake-Password!2026';
+  const bob = new WhisperClient({ server: app.localUrl }), password = 'TtyTest2026';
   const terminal = new headless.Terminal({ cols: 110, rows: 34, allowProposedApi: true }); let child, raw = '', exited = false, exitCode = null;
   const screen = () => Array.from({ length: terminal.rows }, (_, i) => terminal.buffer.active.getLine(terminal.buffer.active.viewportY + i)?.translateToString(true) || '').join('\n');
   async function waitFor(predicate, label, timeout = 15000) {
@@ -34,9 +34,11 @@ test('PowerShell + ConPTY: register, masked secrets, live chat, Chinese, paste, 
   }
   const visible = (text) => waitFor(() => screen().includes(text), text), enter = (text) => child.write(text + '\r');
   try {
-    await bob.authenticate({ username: 'bobby_tty', password, invite: app.inviteCode, register: true });
+    await bob.authenticate({ username: 'bobby_tty', password, register: true });
+    app.db.prepare("UPDATE users SET status='active' WHERE username='bobby_tty' AND status='pending'").run();
+    await bob.authenticate({ username: 'bobby_tty', password });
     const shell = join(process.env.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
-    child = pty.spawn(shell, ['-NoLogo', '-NoProfile', '-Command', `& '${launcher}' --server '${app.localUrl}'; [IO.File]::WriteAllText('${dir}/shell-returned.txt', [string]$LASTEXITCODE); Write-Output 'TTY_RETURNED_TO_POWERSHELL'; Start-Sleep -Milliseconds 700`], {
+    child = pty.spawn(shell, ['-NoLogo', '-NoProfile', '-Command', `& '${launcher}' --server '${app.localUrl}' --color; [IO.File]::WriteAllText('${dir}/shell-returned.txt', [string]$LASTEXITCODE); Write-Output 'TTY_RETURNED_TO_POWERSHELL'; Start-Sleep -Milliseconds 700`], {
       cwd: clientRoot, name: 'xterm-256color', cols: 110, rows: 34, env: { ...process.env, WHISPER_CLI_DATA_DIR: join(dir, 'pins') }, useConpty: true,
     });
     child.onData((data) => { raw += data; terminal.write(data); }); child.onExit((event) => { exited = true; exitCode = event.exitCode; });
@@ -48,8 +50,10 @@ test('PowerShell + ConPTY: register, masked secrets, live chat, Chinese, paste, 
     assert.ok(terminalFrame(terminal).rows.flat().some((cell) => cell.fg.mode === 'palette' && cell.fg.value === 6), 'real PowerShell emits cyan accents');
     enter(''); await visible('用户名 ›'); enter('alice_tty');
     await visible('密码 ›'); child.write(password); await sleep(300); assert.equal(raw.includes(password), false); enter('');
-    await visible('再次输入密码 ›'); enter(password); await visible('邀请码 ›'); enter(app.inviteCode); await visible('已登录');
-    assert.equal(raw.includes(password), false); assert.equal(raw.includes(app.inviteCode), false);
+    await visible('再次输入密码 ›'); enter(password); await visible('申请说明'); enter(''); await visible('等待管理员审批');
+    app.db.prepare("UPDATE users SET status='active' WHERE username='alice_tty' AND status='pending'").run();
+    enter('/login'); await visible('用户名 ›'); enter('alice_tty'); await visible('密码 ›'); enter(password); await visible('已登录');
+    assert.equal(raw.includes(password), false);
     child.write('/cha'); await visible('↑↓ 选择'); child.write('\x1b[B'); await visible('❯ /chat ');
     enter(''); await visible('› /chat'); assert.ok(!screen().includes('→ @bobby_tty'));
     enter('bobby_tty'); await visible('→ @bobby_tty'); await visible('直接输入文字即可聊天');
@@ -101,7 +105,7 @@ test('PowerShell + ConPTY: register, masked secrets, live chat, Chinese, paste, 
     enter('/logout'); await visible('已退出账号'); enter('/quit');
     await waitFor(() => existsSync(join(dir, 'shell-returned.txt')), 'PowerShell continuation'); assert.equal(readFileSync(join(dir, 'shell-returned.txt'), 'utf8'), '0');
     assert.equal((await bob.health()).ok, true);
-    writeFileSync(`test-results/${reportPrefix}-tty-verification.json`, JSON.stringify({ passed: true, checkedAt: new Date().toISOString(), shell: 'Windows PowerShell + ConPTY', serverUnaffected: true, passwordEchoed: false, inviteEchoed: false, registration: true, bidirectionalChat: true, draftPreservedOnReceive: true, chineseAndMultilinePaste: true, terminalEscapeBlocked: true, deletionRedraw: true, resize: true, normalExit: true, slashArrowSelection: true, historyOver200: true, mouseWheel: true, readerAnchor: true, oldPageDeletion: true, semanticColors: true, commandHistory: true, inlineHelp: true, liveCountdown: true }, null, 2));
+    writeFileSync(`test-results/${reportPrefix}-tty-verification.json`, JSON.stringify({ passed: true, checkedAt: new Date().toISOString(), shell: 'Windows PowerShell + ConPTY', serverUnaffected: true, passwordEchoed: false, registrationApproval: true, bidirectionalChat: true, draftPreservedOnReceive: true, chineseAndMultilinePaste: true, terminalEscapeBlocked: true, deletionRedraw: true, resize: true, normalExit: true, slashArrowSelection: true, historyOver200: true, mouseWheel: true, readerAnchor: true, oldPageDeletion: true, inlineHelp: true, liveCountdown: true }, null, 2));
   } catch (error) { console.error(error.stack, 'EXIT_CODE', exitCode, 'TAIL', JSON.stringify(raw.slice(-800))); throw error; } finally {
     await sleep(1000);
     if (child && !exited) { try { process.kill(child.pid, 0); child.kill(); } catch {} }

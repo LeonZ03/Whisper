@@ -7,7 +7,7 @@ import { PassThrough } from 'node:stream';
 import { WhisperClient, PinStore, normalizeServer } from '../cli/client.mjs';
 import { TerminalUI, safeText, wrapText, graphemes } from '../cli/terminal.mjs';
 import { createWhisperServer } from '../server/app.mjs';
-import { encryptMessage } from '../src/crypto.mjs';
+import { ready, b64, wipe, randomSalt, deriveCredentials, createIdentity, encryptMessage } from '../src/crypto.mjs';
 test('CLI URLs and terminal text safety', () => {
   assert.equal(normalizeServer('http://127.0.0.1:8787/'), 'http://127.0.0.1:8787');
   assert.equal(normalizeServer('https://example.com'), 'https://example.com');
@@ -32,13 +32,68 @@ test('CLI corrupt pin store fails closed', () => {
   try { const path = join(dir, 'pins.json'); writeFileSync(path, 'not-json'); assert.throws(() => new PinStore(path).read(), /阻止聊天/); }
   finally { rmSync(dir, { recursive: true, force: true }); }
 });
+test('CLI enrollment stays pending, excludes passwords from requests, and refuses root', async () => {
+  const calls = [];
+  const client = new WhisperClient({ server: 'https://example.com', fetchImpl: async (url, init) => {
+    calls.push({ url, body: init.body });
+    if (url.endsWith('/api/health')) return Response.json({ app: 'Whisper', ok: true, capabilities: [] });
+    return Response.json({ pending: true, message: '等待审批' }, { status: 202 });
+  } });
+  await assert.rejects(client.authenticate({ username: 'root', password: '12345678' }), /网页入口/);
+  assert.equal(calls.length, 0);
+  const result = await client.authenticate({ username: 'pending_cli', password: '密碼🔐', register: true });
+  assert.equal(result.pending, true); assert.equal(client.user, null); assert.equal(client.cookie, '');
+  assert.equal(calls.length, 2);
+  const wire = calls[1].body; assert.equal(wire.includes('密碼🔐'), false); assert.equal(wire.includes('invite'), false);
+  assert.equal(JSON.parse(wire).passwordLength, 3);
+  await assert.rejects(client.authenticate({ username: 'long_cli', password: '1234567890123', register: true }), /1–12/);
+});
+test('CLI explicit repin preserves the prior key and blocks an incorrect safety code', async () => {
+  const pins = new PinStore(); const me = { id: 'self', publicKey: 'self-key' };
+  const oldPeer = { id: 'peer', publicKey: 'old-key' }, nextPeer = { id: 'peer', publicKey: 'new-key' };
+  pins.save('https://example.com', me, oldPeer, true);
+  const client = new WhisperClient({ server: 'https://example.com' });
+  client.pins = pins; client.user = me; client.selected = { peer: nextPeer };
+  assert.equal(client.trust().blocked, true);
+  await assert.rejects(client.repin(nextPeer.publicKey, 'wrong'), /不匹配/);
+  assert.equal(client.trust().blocked, true);
+  const code = await client.safety(); await client.repin(nextPeer.publicKey, code);
+  assert.equal(client.trust().verified, true);
+  const saved = pins.get(client.server, me, nextPeer);
+  assert.deepEqual(saved.history.map((item) => item.publicKey), ['old-key']);
+  pins.save(client.server, me, nextPeer, true);
+  assert.deepEqual(pins.get(client.server, me, nextPeer).history.map((item) => item.publicKey), ['old-key']);
+});
+test('CLI password change rewraps the same identity and locks the session', async () => {
+  await ready;
+  const previous = 'Legacy-Password-Longer-Than-Twelve', next = '新密碼🔐';
+  const salt = randomSalt(), old = await deriveCredentials(previous, salt), identity = createIdentity(old.vaultKey);
+  const client = new WhisperClient({ server: 'https://example.com' });
+  client.user = { id: 'member-id', username: 'member', publicKey: identity.publicKey, secretKey: identity.secretKey };
+  client.cookie = 'whisper_session=test';
+  const me = { ...client.user, salt, vault: identity.vault, credentialVersion: 2 };
+  client.request = async (path, method, body) => {
+    if (path === '/api/account/me') return me;
+    assert.equal(path, '/api/account/password'); assert.equal(method, 'POST');
+    assert.equal(body.publicKey, identity.publicKey); assert.equal(body.passwordLength, 4);
+    assert.equal(body.currentAuthKey, b64(old.authKey)); assert.equal(JSON.stringify(body).includes(previous), false);
+    assert.equal(JSON.stringify(body).includes(next), false); return { ok: true, identityPreserved: true };
+  };
+  const result = await client.changePassword(previous, next);
+  assert.equal(result.identityPreserved, true); assert.equal(client.user, null); assert.equal(client.cookie, '');
+  assert.ok(identity.secretKey.every((byte) => byte === 0)); wipe(old.authKey); wipe(old.vaultKey);
+});
 test('CLI actual API: E2EE, deletion, expiry, unread images, pinning and account reuse', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'whisper-cli-test-')), app = await createWhisperServer({ dataDir: join(dir, 'db'), port: 0 }), wire = [];
   const a = new WhisperClient({ server: app.localUrl, pinPath: join(dir, 'alice-pins.json'), fetchImpl: (url, init) => { wire.push(init.body || ''); return fetch(url, init); } });
   const b = new WhisperClient({ server: app.localUrl }), c = new WhisperClient({ server: app.localUrl }), again = new WhisperClient({ server: app.localUrl });
-  const password = 'Isolated-CLI-Test-Password!';
+  const password = 'CliTest2026';
   try {
-    for (const [client, username] of [[a, 'alice_cli'], [b, 'bobby_cli'], [c, 'carol_cli']]) await client.authenticate({ username, password, invite: app.inviteCode, register: true });
+    for (const [client, username] of [[a, 'alice_cli'], [b, 'bobby_cli'], [c, 'carol_cli']]) {
+      await client.authenticate({ username, password, register: true });
+      app.db.prepare("UPDATE users SET status='active' WHERE username=? AND status='pending'").run(username);
+      await client.authenticate({ username, password });
+    }
     await a.chat('bobby_cli'); await b.chat('alice_cli'); assert.equal(await a.safety(), await b.safety());
     a.verify(a.selected.peer.publicKey); assert.equal(a.trust().verified, true);
     await again.authenticate({ username: 'alice_cli', password }); assert.equal(again.user.publicKey, a.user.publicKey);

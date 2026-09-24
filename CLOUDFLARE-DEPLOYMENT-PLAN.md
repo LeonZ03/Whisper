@@ -1,15 +1,14 @@
 # Whisper：Cloudflare 部署进度与方案
 
-更新：2026-09-24。用户已确认正式域名 `whisper.leonz03.dpdns.org`。
-技术适配、空数据库初始化和 Worker 首次发布已完成，域名已绑定。
-**运行时 Secret、GitHub Builds 连接和真实推送自动发布已验证，首个验收提交为 `2546866`。**
-具体设置和后续状态见 [cloud/DEPLOYMENT.md](cloud/DEPLOYMENT.md)。
+更新：2026-09-24。正式域名为 `whisper.leonz03.dpdns.org`。
+旧版 Worker 与 GitHub 推送部署曾完成验证；账号审批升级的迁移、完整代码推送和线上验收均**待主任务实际核实**。不得把旧版部署记录当作本次功能已经上线。
+具体阶段见 [cloud/DEPLOYMENT.md](cloud/DEPLOYMENT.md)。
 
 ## 架构
 
 ```text
 GitHub LeonZ03/Whisper · main
-  → Cloudflare Workers Builds（main 推送自动触发，已验证）
+  → Cloudflare Workers Builds（旧版 main 推送链路曾验证；本次发布待核实）
   → 测试 → 构建 → 只发布代码 → Worker + Static Assets（数据库迁移单独审核执行）
 
 正式域名 → 网页 / 同域 API / CLI 安装入口
@@ -45,6 +44,8 @@ D1 Time Travel 会保留历史密文；删除活动数据不是对云厂商备�
 本次没有开通付费服务，不承诺免费额度永远足够。达到请求或 CPU 上限应先优化或征求费用确认。
 
 ## 验收门禁
+
+账号升级按过渡兼容代码、单独审核迁移、完整代码推送、线上验收的顺序推进。**这些阶段目前待核实**，除非部署手册已补入对应真实记录。回滚代码不得重新启用旧直接注册，也不得回滚或重置数据库。
 
 1. 运行时 Secret 配置后，两个云端账号完成实际注册、登录、文字/图片、双方删除与到期验证。
 2. 正式域名 HTTPS 返回云端实例，不回源本机隧道。workers.dev 备用域名的网络可达性不作为正式入口可用的前提。

@@ -70,6 +70,16 @@
 
 - Ordinary Builds deploy with `deploy:cloud:code`. Database migrations are owner-reviewed and separate; do not silently add D1 write permissions to a build token.
 
+## Account approval and recovery
+
+- Registration is owner-approved and invitation-free. Do not restore direct account activation or request an invitation code.
+- New passwords are 1–12 Unicode code points after NFC normalization. This is for enrollment, password changes, and recovery only; preserve login compatibility for existing longer passwords. Warn users that short passwords are weak.
+- Owner bootstrap is `node scripts/manage-root.mjs --local` or `--cloud`; first password is `0000`, followed by a private one-time activation file under ignored `data/` and mandatory password change. Recovery uses the same target flag plus `--recover`. Never place activation/recovery codes in source, command arguments, logs, release assets, or public instructions.
+- Member password change rewraps the same identity. Owner-issued member recovery replaces the identity, seals old conversations, and cannot restore old message decryption; safety-code rechecking is required. Explain this boundary accurately.
+- Removal/rejection is soft deletion with session revocation and conversation sealing, not a promise of physical erasure. Be accurate about root login IP and estimated-location logging, application-readable request notes, and service-visible metadata.
+- Deploy account changes in stages: first compatible explicit session columns and disabling the old direct-registration path; then a separately reviewed migration; then the complete code push and online verification. A code rollback must not re-enable the old registration path. Do not report any stage complete without the main task's verified milestone.
+- Link README.md to SECURITY.md, whose claims must match `src/crypto.mjs` and its known limits. Keep user-facing setup concise and in Chinese.
+
 ## Verified release pipeline (2026-09-24)
 
 - The GitHub App now includes Whisper and retains BeiPiao; never replace that list with all repositories or remove unrelated entries.

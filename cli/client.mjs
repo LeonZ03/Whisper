@@ -1,7 +1,8 @@
 import { readFileSync, writeFileSync, mkdirSync, renameSync, unlinkSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { ready, b64, wipe, randomSalt, deriveCredentials, createIdentity, unlockIdentity, encryptMessage, decryptMessage, safetyCode } from '../src/crypto.mjs';
+import { ready, b64, wipe, deriveCredentials, unlockIdentity, encryptMessage, decryptMessage, safetyCode } from '../src/crypto.mjs';
+import { prepareEnrollment, preparePasswordChange } from '../src/account-client.mjs';
 
 export const TTL = Object.freeze({ '1m': 60000, '1h': 3600000, '24h': 86400000, '7d': 604800000 });
 export function normalizeServer(value) {
@@ -37,14 +38,22 @@ export class PinStore {
   save(origin, user, peer, verified = false) {
     const data = this.read(), key = this.key(origin, user, peer), existing = data[key];
     if (existing && existing.publicKey !== peer.publicKey) throw new Error('对方公钥变化，禁止覆盖原信任记录。');
-    data[key] = { publicKey: peer.publicKey, verified: Boolean(verified || existing?.verified) };
+    data[key] = { ...existing, publicKey: peer.publicKey, verified: Boolean(verified || existing?.verified) };
+    this.write(data);
+  }
+  repin(origin, user, peer) {
+    const data = this.read(), key = this.key(origin, user, peer), existing = data[key];
+    if (!existing || existing.publicKey === peer.publicKey) throw new Error('没有需要重新核对的公钥变化。');
+    const history = Array.isArray(existing.history) ? existing.history : [];
+    data[key] = { publicKey: peer.publicKey, verified: true, history: [...history, { publicKey: existing.publicKey, verified: Boolean(existing.verified), replacedAt: new Date().toISOString() }] };
+    this.write(data);
+  }
+  write(data) {
     if (!this.path) { this.memory = data; return; }
     mkdirSync(dirname(this.path), { recursive: true });
     const temporary = `${this.path}.${randomUUID()}.tmp`;
-    try {
-      writeFileSync(temporary, JSON.stringify(data, null, 2) + '\n', { mode: 0o600, flag: 'wx' });
-      renameSync(temporary, this.path);
-    } finally { try { unlinkSync(temporary); } catch {} }
+    try { writeFileSync(temporary, JSON.stringify(data, null, 2) + '\n', { mode: 0o600, flag: 'wx' }); renameSync(temporary, this.path); }
+    finally { try { unlinkSync(temporary); } catch {} }
   }
 }
 export class WhisperClient {
@@ -81,23 +90,25 @@ export class WhisperClient {
     this.pollIntervalMs = result.environment === 'cloud' ? Math.max(5000, Number(result.pollIntervalMs) || 5000) : 2000;
     return result;
   }
-  async authenticate({ username, password, invite, register = false }) {
+  async authenticate({ username, password, register = false, applicationMessage = '' }) {
     if (this.user) throw new Error('请先 /logout，再切换账号。');
     username = usernameOf(username);
-    if (!password || password.length > 1024 || (register && password.length < 12)) throw new Error(register ? '注册密码需为 12–1024 个字符。' : '请输入密码（最长 1024 字符）。');
+    if (!password || password.length > 1024) throw new Error('请输入密码（最长 1024 字符）。');
+    if (username === 'root') throw new Error('root 管理员请使用网页入口登录；CLI 不提供管理员会话。');
     await ready; await this.health(); let credentials, identity, secretKey;
     try {
-      const salt = register ? randomSalt() : (await this.request('/api/auth/salt?username=' + encodeURIComponent(username))).salt;
-      credentials = await deriveCredentials(password, salt); password = ''; let user;
       if (register) {
-        identity = createIdentity(credentials.vaultKey);
-        user = await this.request('/api/auth/register', 'POST', { username, invite, salt, authKey: b64(credentials.authKey), publicKey: identity.publicKey, vault: identity.vault });
-        secretKey = identity.secretKey;
-        if (user.publicKey !== identity.publicKey) throw new Error('服务器返回的身份密钥不匹配。');
-      } else {
-        user = await this.request('/api/auth/login', 'POST', { username, authKey: b64(credentials.authKey) });
-        secretKey = unlockIdentity(user, credentials.vaultKey);
+        const enrollment = await prepareEnrollment(password, applicationMessage);
+        const result = await this.request('/api/auth/register', 'POST', { username, ...enrollment });
+        if (this.cookie) { this.lock(); throw new Error('注册申请意外返回会话，已取消。'); }
+        if (result.pending !== true) throw new Error('服务器未确认待审批申请。');
+        return result;
       }
+      const salt = (await this.request('/api/auth/salt?username=' + encodeURIComponent(username))).salt;
+      credentials = await deriveCredentials(password, salt); password = ''; let user;
+      user = await this.request('/api/auth/login', 'POST', { username, authKey: b64(credentials.authKey) });
+      if (user.role !== 'member' || user.username === 'root') throw new Error('管理员会话只能在网页使用。');
+      secretKey = unlockIdentity(user, credentials.vaultKey);
       if (!this.cookie) throw new Error('服务器没有返回登录会话。');
       this.user = { id: user.id, username: user.username, publicKey: user.publicKey, secretKey };
     } catch (error) {
@@ -105,6 +116,21 @@ export class WhisperClient {
       if (this.cookie) await this.request('/api/auth/logout', 'POST', {}, 1500).catch(() => {});
       this.lock(); throw error;
     } finally { password = ''; wipe(credentials?.authKey); wipe(credentials?.vaultKey); }
+  }
+  async changePassword(currentPassword, newPassword) {
+    this.requireUser();
+    const me = await this.request('/api/account/me');
+    if (me.id !== this.user.id || me.publicKey !== this.user.publicKey) throw new Error('账号身份已改变，请重新登录。');
+    const envelope = await preparePasswordChange(me, currentPassword, newPassword);
+    try { return await this.request('/api/account/password', 'POST', envelope); }
+    finally { this.lock(); }
+  }
+  async recover({ username, recoveryCode, password }) {
+    if (this.user) throw new Error('请先 /logout。');
+    username = usernameOf(username);
+    if (username === 'root') throw new Error('root 请使用所有者恢复工具。');
+    const enrollment = await prepareEnrollment(password);
+    return this.request('/api/auth/recover', 'POST', { username, recoveryCode, ...enrollment });
   }
   requireUser() { if (!this.user) throw new Error('请先输入 /login 或 /register。'); }
   requireChat() { this.requireUser(); if (!this.selected) throw new Error('请先 /chat 对方用户名。'); }
@@ -184,6 +210,14 @@ export class WhisperClient {
     this.requireChat();
     if (this.selected.peer.publicKey !== expectedPeerKey || this.trust().blocked) throw new Error('公钥变化，不能标记为已核对。');
     this.pins.save(this.server, this.user, this.selected.peer, true);
+  }
+  repin(expectedPeerKey, confirmedSafetyCode) {
+    this.requireChat();
+    if (!this.trust().blocked || this.selected.peer.publicKey !== expectedPeerKey) throw new Error('对方公钥已再次变化，请重新核对。');
+    return safetyCode(this.user, this.selected.peer).then((code) => {
+      if (confirmedSafetyCode.replaceAll(/\s/g, '') !== code.replaceAll(/\s/g, '')) throw new Error('安全码不匹配，信任记录未改变。');
+      this.pins.repin(this.server, this.user, this.selected.peer);
+    });
   }
   async remove(id) { this.requireChat(); await this.request('/api/messages/' + encodeURIComponent(id), 'DELETE'); }
   async clear(conversationId, throughSeq) {

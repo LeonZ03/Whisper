@@ -49,3 +49,9 @@ export async function safetyCode(user, peer) {
   const hash = new Uint8Array(await crypto.subtle.digest('SHA-256', encoder.encode('Whisper safety code v1|' + material)));
   return [...hash].map((x) => x.toString(16).padStart(2, '0')).join('').toUpperCase().match(/.{4}/g).join(' ');
 }
+
+// Changing an account password re-encrypts the SAME identity key, not its messages.
+export function rewrapIdentity(secretKey, vaultKey) {
+  const nonce = sodium.randombytes_buf(24);
+  return { nonce: b64(nonce), ciphertext: b64(sodium.crypto_secretbox_easy(secretKey, nonce, vaultKey)) };
+}

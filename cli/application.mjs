@@ -1,9 +1,10 @@
 import { TTL, normalizeServer } from './client.mjs';
 import { CommandTranscript, historyCommand } from './transcript.mjs';
 export const HELP = [
-  '命令 / Commands', '', '/login              登录已有账号（密码隐藏输入）', '/register           用邀请码创建账号',
+  '命令 / Commands', '', '/login              登录已有账号（密码隐藏输入）', '/register           提交注册申请，等待审批',
+  '/passwd             修改密码并保留身份', '/recover            使用一次性恢复码重建身份',
   '/chats              会话列表；输入序号选择', '/chat 用户名        与这个用户聊天 / 切换会话',
-  '/safety             查看并核对完整安全码', '/ttl 1m|1h|24h|7d   设置以后发送的文字保留时间',
+  '/safety             查看并核对完整安全码；公钥变化时可重新固定', '/ttl 1m|1h|24h|7d   设置以后发送的文字保留时间',
   '/delete 消息序号    双方删除一条消息（需要确认）', '/clear              清空当前双方记录（需要确认）',
   '/refresh            重新同步', '/web                显示网页地址；图片请用网页',
   '/server HTTPS地址   未登录时切换服务', '/logout             退出账号并清理本机解锁密钥',
@@ -13,7 +14,9 @@ export const HELP = [
 ];
 export const COMMAND_ITEMS = [
   { name: '/login', description: '登录已有账号' },
-  { name: '/register', description: '邀请注册新账号' },
+  { name: '/register', description: '提交注册申请，等待审批' },
+  { name: '/passwd', description: '修改密码，保留身份' },
+  { name: '/recover', description: '一次性恢复码重建身份' },
   { name: '/chats', description: '查看会话列表' },
   { name: '/chat', description: '选择联系人：/chat 用户名', argument: true },
   { name: '/safety', description: '核对双方安全码' },
@@ -146,19 +149,45 @@ export class ChatApplication {
   }
   async authenticate(register) {
     if (this.client.user) throw new Error('请先 /logout，再切换账号。');
-    this.overlay = [register ? '创建账号' : '登录已有账号', '', '与网页共用同一身份；密码只在本机用于派生密钥。', '不会把明文密码写入命令行参数、文件或输入历史。', '', 'Esc 取消；密码遗失无法找回。'];
-    this.render(); const username = await this.ui.ask('用户名'); let password = '', repeat = '', invite = '';
+    this.overlay = [register ? '提交注册申请' : '登录已有账号', '', '与网页共用同一身份；密码只在本机用于派生密钥。', '不会把明文密码写入命令行参数、文件或输入历史。', '', register ? '新密码为 1–12 个 Unicode 字符，申请通过后再登录。' : '忘记密码可由管理员发放一次性恢复码。'];
+    this.render(); const username = await this.ui.ask('用户名'); let password = '', repeat = '', applicationMessage = '';
     try {
+      if (username.trim().toLowerCase() === 'root') throw new Error('root 管理员请在网页登录：' + this.client.server);
       password = await this.ui.ask('密码', { secret: true });
       if (register) {
         repeat = await this.ui.ask('再次输入密码', { secret: true });
-        if (password !== repeat) throw new Error('两次密码不一致。');
-        repeat = ''; invite = await this.ui.ask('邀请码', { secret: true });
+        if (password.normalize('NFC') !== repeat.normalize('NFC')) throw new Error('两次密码不一致。');
+        repeat = ''; applicationMessage = await this.ui.ask('申请说明（可留空）');
       }
-      this.render(); await this.client.authenticate({ username, password, invite, register }); password = ''; invite = '';
+      this.render(); const result = await this.client.authenticate({ username, password, applicationMessage, register }); password = ''; applicationMessage = '';
+      if (register) { this.overlay = null; this.notify(result.message || '申请已提交，请等待管理员审批后登录。', 'success'); return; }
       if (this.closed) return; await this.client.sync(); this.overlay = null; this.overlayKind = null;
       this.notify('已登录。用 /chat 用户名 开始聊天；/chats 查看会话。', 'success');
-    } finally { password = ''; repeat = ''; invite = ''; }
+    } finally { password = ''; repeat = ''; applicationMessage = ''; }
+  }
+  async changePassword() {
+    this.client.requireUser(); this.overlay = ['修改密码', '', '当前密码和新密码只通过隐藏输入获取。', '成功后所有会话撤销，请重新登录。']; this.render();
+    let current = '', next = '', repeat = '';
+    try {
+      current = await this.ui.ask('当前密码', { secret: true }); next = await this.ui.ask('新密码（1–12 字符）', { secret: true });
+      repeat = await this.ui.ask('确认新密码', { secret: true });
+      if (next.normalize('NFC') !== repeat.normalize('NFC')) throw new Error('两次新密码不一致。');
+      await this.client.changePassword(current, next); this.overlay = null; this.notify('密码已修改，身份公钥保持不变。请重新登录。', 'success');
+    } finally { current = ''; next = ''; repeat = ''; }
+  }
+  async recover() {
+    if (this.client.user) throw new Error('请先 /logout。');
+    this.overlay = ['恢复账号', '', '请向管理员私下取得一次性恢复码。', '恢复会创建新身份；旧消息无法再读取，需要重新核对安全码。']; this.render();
+    let recoveryCode = '', password = '', repeat = '';
+    try {
+      const username = await this.ui.ask('用户名');
+      recoveryCode = await this.ui.ask('一次性恢复码', { secret: true });
+      password = await this.ui.ask('新密码（1–12 字符）', { secret: true });
+      repeat = await this.ui.ask('确认新密码', { secret: true });
+      if (password.normalize('NFC') !== repeat.normalize('NFC')) throw new Error('两次新密码不一致。');
+      const result = await this.client.recover({ username, recoveryCode, password });
+      this.overlay = null; this.notify(result.message || '恢复完成，请重新登录并核对安全码。', 'success');
+    } finally { recoveryCode = ''; password = ''; repeat = ''; }
   }
   async execute(line, literal = false) {
     this.busy = true; this.ui.busy = true;
@@ -177,12 +206,14 @@ export class ChatApplication {
         this.notify('已发送。消息在本机加密后上传。', 'success'); this.ui.scroll = 0; this.ui.anchor = null; await this.synchronize(); return;
       }
       const space = trimmed.search(/\s/), command = (space === -1 ? trimmed : trimmed.slice(0, space)).toLowerCase(), argument = space === -1 ? '' : trimmed.slice(space).trim();
-      if (['/login', '/register', '/logout', '/help', '/chats', '/safety', '/clear', '/refresh', '/web', '/quit'].includes(command) && argument) throw new Error('此命令不接受参数；账号和密码请在交互提示中输入。');
+      if (['/login', '/register', '/passwd', '/recover', '/logout', '/help', '/chats', '/safety', '/clear', '/refresh', '/web', '/quit'].includes(command) && argument) throw new Error('此命令不接受参数；账号和密码请在交互提示中输入。');
       const recalled = historyCommand(command, argument);
       if (recalled) this.ui.rememberCommand(recalled);
       switch (command) {
         case '/login': await this.authenticate(false); break;
         case '/register': await this.authenticate(true); break;
+        case '/passwd': await this.changePassword(); break;
+        case '/recover': await this.recover(); break;
         case '/help': this.showOutput('/help', HELP, 'help'); this.notice = '帮助已追加；向上翻仍可查看聊天，直接输入可继续发送。'; break;
         case '/chat':
           await this.client.chat(argument); this.overlay = null; this.overlayKind = null; this.ui.scroll = 0;
@@ -194,7 +225,12 @@ export class ChatApplication {
         case '/safety': {
           this.client.requireChat(); await this.client.sync(); this.client.requireChat(); const key = this.client.selected.peer.publicKey, code = await this.client.safety();
           this.showOutput('/safety', ['双方安全码', '', ...code.match(/.{1,39}/g), '', '通过当面或其他可信渠道核对全部分组。', '首次自动记住公钥，不代表已经验证身份。'], 'safety');
-          this.render(); if (this.client.trust().blocked) throw new Error('公钥变化，禁止标记已验证。');
+          this.render(); if (this.client.trust().blocked) {
+            this.notify('公钥已变化。请在可信的外部渠道逐字核对完整安全码，然后在下方输入完整安全码确认新公钥。', 'warning'); this.render();
+            const confirmed = await this.ui.ask('外部核对后的完整安全码');
+            await this.client.repin(key, confirmed);
+            this.notice = '已固定核对后的新公钥；旧记录保留在本机历史中。'; this.overlay = null; break;
+          }
           if (await this.confirm('仅在双方安全码完全一致时确认。')) { this.client.verify(key); this.notice = '已在 CLI 标记安全码核对通过。'; }
           else this.notice = '没有更改核对状态。'; this.overlay = null; break;
         }

@@ -19,7 +19,7 @@ function terminal() {
 test('slash menu: immediate prefix matching, arrows, Enter, arguments, dismissal, safe paste', async () => {
   const { ui, type, key } = terminal(), sent = []; ui.on('line', (...args) => sent.push(args));
   try {
-    type('/'); assert.equal(ui.menu().length, 14); assert.ok(ui.layout.menuHeight > 0);
+    type('/'); assert.equal(ui.menu().length, COMMAND_ITEMS.length); assert.ok(ui.layout.menuHeight > 0);
     key('down'); assert.equal(ui.menu()[ui.menuIndex].name, '/register');
     key('return'); assert.deepEqual(sent.pop(), ['/register', false]);
     type('/cha'); assert.deepEqual(ui.menu().map((x) => x.name), ['/chats', '/chat']);
@@ -27,7 +27,7 @@ test('slash menu: immediate prefix matching, arrows, Enter, arguments, dismissal
     type('bobby'); key('return'); assert.deepEqual(sent.pop(), ['/chat bobby', false]);
     type('/q'); assert.equal(ui.menu()[0].name, '/quit'); key('escape'); assert.equal(ui.buffer, '/q'); assert.equal(ui.menu().length, 0);
     key('escape'); type('/nosuchcommand'); assert.equal(ui.menu().length, 0); key('u', { ctrl: true });
-    type('/'); for (let i = 0; i < 13; i++) key('down');
+    type('/'); for (let i = 0; i < COMMAND_ITEMS.length - 1; i++) key('down');
     assert.equal(ui.menu()[ui.menuIndex].name, '/quit'); assert.ok(ui.lastLines.some((s) => s.includes('❯ /quit')));
     key('u', { ctrl: true }); key('paste-start'); type('/quit'); key('paste-end');
     assert.equal(ui.menu().length, 0); key('return'); assert.deepEqual(sent.pop(), ['/quit', true]);
@@ -64,7 +64,9 @@ test('501 messages: history pagination and lifecycle permissions', async () => {
   const c = new WhisperClient({ server: app.localUrl });
   try {
     for (const [client, username] of [[a, 'alice_history'], [b, 'bobby_history'], [c, 'carol_history']]) {
-      await client.authenticate({ username, password: 'History-Test-Only!2026', invite: app.inviteCode, register: true });
+      await client.authenticate({ username, password: 'History2026', register: true });
+      app.db.prepare("UPDATE users SET status='active' WHERE username=? AND status='pending'").run(username);
+      await client.authenticate({ username, password: 'History2026' });
     }
     await a.chat('bobby_history'); await b.chat('alice_history');
     const insert = app.db.prepare('INSERT INTO messages(id,conversation_id,sender_id,type,nonce,ciphertext,created_at,expires_at) VALUES(?,?,?,?,?,?,?,?)');

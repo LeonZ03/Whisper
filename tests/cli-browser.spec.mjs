@@ -7,13 +7,18 @@ import { WhisperClient } from '../cli/client.mjs';
 test('CLI 与网页互通：共用账号、双向加密、安全码、双方删除、图片不误领取', async ({ browser }) => {
   const dir = mkdtempSync(join(tmpdir(), 'whisper-cli-browser-')), app = await createWhisperServer({ dataDir: dir, port: 0 });
   const client = new WhisperClient({ server: app.localUrl }), context = await browser.newContext(), page = await context.newPage();
-  const password = 'CLI-Web-Interop-Test-Only!2026', errors = [];
+  const password = 'CliWeb26!', errors = [];
   page.on('pageerror', (error) => errors.push(error.message)); page.on('dialog', (dialog) => dialog.accept());
   try {
-    await client.authenticate({ username: 'terminal_user', password, invite: app.inviteCode, register: true });
+    await client.authenticate({ username: 'terminal_user', password, register: true });
+    app.db.prepare("UPDATE users SET status='active', reviewed_at=? WHERE username='terminal_user'").run(Date.now());
+    await client.authenticate({ username: 'terminal_user', password });
     await page.goto(app.localUrl); await expect(page.locator('#auth-submit')).toBeEnabled();
     await page.locator('#register-tab').click(); await page.locator('#username').fill('browser_user');
-    await page.locator('#password').fill(password); await page.locator('#invite').fill(app.inviteCode);
+    await page.locator('#password').fill(password);
+    await page.locator('#auth-submit').click(); await expect(page.locator('#toast')).toContainText('等待管理员审批');
+    app.db.prepare("UPDATE users SET status='active', reviewed_at=? WHERE username='browser_user'").run(Date.now());
+    await page.locator('#login-tab').click(); await page.locator('#username').fill('browser_user'); await page.locator('#password').fill(password);
     await page.locator('#auth-submit').click(); await expect(page.locator('#chat-screen')).toBeVisible();
     await client.chat('browser_user'); await page.getByRole('button', { name: '与 terminal_user 的会话' }).click({ timeout: 10000 });
     const text = '这条文字由 CLI 在本机加密，网页解密显示。';

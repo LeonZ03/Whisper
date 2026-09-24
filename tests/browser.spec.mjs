@@ -12,17 +12,24 @@ test('两个浏览器真实加密聊天、图片、删除、越权及跨入口�
   const failures = []; const network = [];
   for (const page of [a, b, c, d]) { page.on('pageerror', (e) => failures.push(e.message)); page.on('dialog', (dialog) => dialog.accept()); }
   a.on('request', (request) => { if (request.method() === 'POST') network.push(request.postData() || ''); });
-  const password = 'Browser-Test-Only-Password!2026';
-  async function register(page, username) {
+  const password = 'Browser26!';
+  async function apply(page, username) {
     await page.goto(app.localUrl); await expect(page.locator('#auth-submit')).toBeEnabled();
     await page.locator('#register-tab').click(); await page.locator('#username').fill(username);
-    await page.locator('#password').fill(password); await page.locator('#invite').fill(app.inviteCode);
+    await page.locator('#password').fill(password);
+    await page.locator('#auth-submit').click(); await expect(page.locator('#toast')).toContainText('等待管理员审批');
+  }
+  async function login(page, username) {
+    await page.goto(app.localUrl); await expect(page.locator('#auth-submit')).toBeEnabled();
+    await page.locator('#username').fill(username); await page.locator('#password').fill(password);
     await page.locator('#auth-submit').click(); await expect(page.locator('#chat-screen')).toBeVisible({ timeout: 30000 });
   }
   try {
     await a.goto(app.localUrl); await expect(a.locator('#auth-submit')).toBeEnabled();
     await a.screenshot({ path: 'test-results/login-desktop.png', fullPage: true });
-    await register(a, 'alice_demo'); await register(b, 'bobby_demo'); await register(c, 'carol_demo');
+    await apply(a, 'alice_demo'); await apply(b, 'bobby_demo'); await apply(c, 'carol_demo');
+    for (const username of ['alice_demo','bobby_demo','carol_demo']) app.db.prepare("UPDATE users SET status='active', reviewed_at=? WHERE username=? AND status='pending'").run(Date.now(), username);
+    await login(a, 'alice_demo'); await login(b, 'bobby_demo'); await login(c, 'carol_demo');
     await a.locator('#peer-name').fill('bobby_demo'); await a.getByRole('button', { name: '开始会话', exact: true }).click();
     await expect(a.locator('#peer-title')).toHaveText('bobby_demo');
     await b.getByRole('button', { name: '与 alice_demo 的会话' }).click({ timeout: 10000 });

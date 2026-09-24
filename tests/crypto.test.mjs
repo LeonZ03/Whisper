@@ -12,9 +12,13 @@ test('密钥封装、密码派生分离、双向加解密、第三方隔离、�
   assert.deepEqual(unlockIdentity(a, credentials.vaultKey), a.secretKey);
   assert.throws(() => unlockIdentity(a, new Uint8Array(32)));
   const conversationId = randomUUID();
-  const wire = { ...encryptMessage(a, b, conversationId, '只在浏览器解密 <script>alert(1)</script>'), senderId: a.id, conversationId };
-  assert.equal(decryptMessage(wire, b, a).body, '只在浏览器解密 <script>alert(1)</script>');
-  assert.equal(decryptMessage(wire, a, b).body, '只在浏览器解密 <script>alert(1)</script>');
+  const plaintext = '只在浏览器解密 <script>alert(1)</script>';
+  const wire = { ...encryptMessage(a, b, conversationId, plaintext), senderId: a.id, conversationId };
+  const repeated = encryptMessage(a, b, conversationId, plaintext);
+  assert.notEqual(wire.ciphertext, repeated.ciphertext);
+  assert.equal(Buffer.from(wire.ciphertext, 'base64').includes(Buffer.from(plaintext)), false);
+  assert.equal(decryptMessage(wire, b, a).body, plaintext);
+  assert.equal(decryptMessage(wire, a, b).body, plaintext);
   assert.throws(() => decryptMessage(wire, c, a));
   assert.throws(() => decryptMessage({ ...wire, id: randomUUID() }, b, a));
   const damaged = Buffer.from(wire.ciphertext, 'base64'); damaged[0] ^= 1;

@@ -15,3 +15,21 @@
 @keyframes message-dissolve{from{opacity:.75;transform:translateY(0) scale(1)}to{opacity:0;transform:translateY(-4px) scale(.98)}}
 @media(prefers-reduced-motion:reduce){.message-retiring{animation:none}}
 @media(max-width:600px){.message-countdown{font-size:10px}.message-meta{gap:6px}.image-card{min-width:0}}
+
+/* Account approval and owner-only administration; no external UI dependencies. */
+.weak-password-note{font-size:11px;line-height:1.8;color:#976b32;background:#fffaf0;border:1px solid #eee4cc;padding:10px 12px;border-radius:8px}
+#request-note,#recovery-result{width:100%;padding:10px;resize:vertical}
+.consent{display:flex;align-items:flex-start;gap:8px;line-height:1.7;font-size:12px}.consent input{width:15px;margin-top:4px;flex:none}
+.admin-panel{flex:1;min-height:0;overflow:auto;padding:28px max(24px,calc((100vw - 1100px)/2));background:#fafbf9}
+.admin-heading{display:flex;justify-content:space-between;gap:20px;align-items:center;margin:4px 0 20px}
+.admin-heading h2{font-size:20px;font-weight:550;margin:0 0 8px}.admin-heading p{font-size:12px;line-height:1.8;color:var(--muted);margin:0}
+.member-list{display:flex;flex-direction:column;gap:10px;margin-bottom:35px}
+.member-card{display:flex;justify-content:space-between;align-items:center;gap:20px;padding:17px 20px;background:#fff;border:1px solid var(--line);border-radius:11px}
+.member-info{min-width:0}.member-info strong{font-size:14px}.member-info small{display:block;font-size:10px;color:var(--muted);margin-top:8px}
+.member-status{display:inline-block;font-size:10px;margin-left:12px;padding:3px 8px;border-radius:5px;color:#527464;background:#edf3ed}
+.application-message{font-size:12px;color:#687b70;line-height:1.8;white-space:pre-wrap;overflow-wrap:anywhere;margin:8px 0}
+.member-actions{display:flex;gap:8px;flex-shrink:0}.audit-scroll{overflow:auto;border:1px solid var(--line);border-radius:9px;background:#fff}
+.audit-scroll table{border-collapse:collapse;width:100%;min-width:620px;font-size:11px;text-align:left}.audit-scroll th{background:#f1f5f0;color:#657569;font-weight:550}
+.audit-scroll th,.audit-scroll td{padding:12px 14px;border-bottom:1px solid var(--line);vertical-align:top}.audit-scroll td{overflow-wrap:anywhere}
+#log-more{margin-top:12px}#password-dialog p,#member-action-dialog p,#recovery-result-dialog p{font-size:12px;line-height:1.8;color:#718276}
+@media(max-width:600px){.admin-panel{padding:18px 14px}.admin-heading{align-items:flex-start;gap:8px}.member-card{padding:13px;gap:8px;align-items:flex-start;flex-direction:column}.member-actions{align-self:flex-end}.header-right{gap:6px}#account-settings{font-size:10px}}

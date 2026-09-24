@@ -1,8 +1,10 @@
+import { accountService } from '../accounts/service.mjs';
+import { localStore } from '../accounts/local-store.mjs';
 import express from 'express';
 import { DatabaseSync } from 'node:sqlite';
 import { randomBytes, randomUUID, scrypt, timingSafeEqual, createHash, createHmac } from 'node:crypto';
 import { promisify } from 'node:util';
-import { mkdirSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -28,9 +30,6 @@ function base64(value, bytes, max = bytes) {
 export async function createWhisperServer(options = {}) {
   const dataDir = resolve(options.dataDir || process.env.WHISPER_DATA_DIR || resolve(root, 'data'));
   mkdirSync(dataDir, { recursive: true });
-  const invitePath = resolve(dataDir, 'invite-code.txt');
-  if (!existsSync(invitePath)) writeFileSync(invitePath, 'WH-' + randomBytes(12).toString('hex') + '\n', { mode: 0o600 });
-  const inviteCode = readFileSync(invitePath, 'utf8').trim();
   const db = new DatabaseSync(resolve(dataDir, 'whisper.sqlite'));
   db.exec(`PRAGMA journal_mode=DELETE; PRAGMA secure_delete=ON; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=3000;
     CREATE TABLE IF NOT EXISTS users (
@@ -50,6 +49,15 @@ export async function createWhisperServer(options = {}) {
     );
     CREATE INDEX IF NOT EXISTS messages_conv ON messages(conversation_id,seq);
     CREATE INDEX IF NOT EXISTS messages_expiry ON messages(expires_at);`);
+  // Local schema upgrade is atomic; it never runs against the cloud database.
+  if (!db.prepare('PRAGMA table_info(users)').all().some(c => c.name === 'role')) {
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      db.exec("ALTER TABLE users ADD COLUMN auth_scheme TEXT NOT NULL DEFAULT 'scrypt-v1'");
+      db.exec(readFileSync(resolve(root, 'cloud/migrations/0002_accounts.sql'), 'utf8'));
+      db.exec('COMMIT');
+    } catch (error) { db.exec('ROLLBACK'); db.close(); throw error; }
+  }
   const instance = randomUUID();
   const sessions = new Map();
   const limits = new Map();
@@ -110,28 +118,19 @@ export async function createWhisperServer(options = {}) {
     const m = /(?:^|;\s*)whisper_session=([A-Za-z0-9_-]{43})(?:;|$)/.exec(req.get('cookie') || '');
     return m ? m[1] : null;
   }
-  function auth(req, _res, next) {
-    const token = sessionToken(req); const session = token && sessions.get(hash(token));
-    if (!session || session.expires <= Date.now()) fail(401, '登录已过期，请重新登录。');
-    req.userId = session.userId; next();
-  }
-  function issueSession(req, res, userId) {
-    const old = sessionToken(req); if (old) sessions.delete(hash(old));
-    const token = randomBytes(32).toString('base64url');
-    const existing = [...sessions].filter(([, v]) => v.userId === userId);
-    for (const [key] of existing.slice(0, Math.max(0, existing.length - 7))) sessions.delete(key);
-    sessions.set(hash(token), { userId, expires: Date.now() + 12 * 3_600_000 });
-    res.cookie('whisper_session', token, { httpOnly: true, secure: originFor(req).startsWith('https:'), sameSite: 'strict', path: '/', maxAge: 12 * 3_600_000 });
+  async function auth(req, _res, next) {
+    try { const user = await accountsFor(req).authorize({ memberOnly: true }); req.userId = user.id; next(); }
+    catch (error) { next(error); }
   }
   const publicUser = (u) => ({ id: u.id, username: u.username, publicKey: u.public_key });
   const vaultUser = (u) => ({ ...publicUser(u), salt: u.salt, vault: { nonce: u.vault_nonce, ciphertext: u.vault_cipher } });
   function conversation(req, id) {
-    const row = db.prepare('SELECT * FROM conversations WHERE id=? AND (a=? OR b=?)').get(id, req.userId, req.userId);
+    const row = db.prepare("SELECT * FROM conversations WHERE id=? AND (a=? OR b=?) AND archived_at IS NULL AND a IN (SELECT id FROM users WHERE status='active') AND b IN (SELECT id FROM users WHERE status='active')").get(id, req.userId, req.userId);
     if (!row) fail(404, '会话不存在或无权访问。');
     return row;
   }
   function message(req, id) {
-    const row = db.prepare('SELECT m.* FROM messages m JOIN conversations c ON m.conversation_id=c.id WHERE m.id=? AND (c.a=? OR c.b=?) AND m.expires_at>?').get(id, req.userId, req.userId, Date.now());
+    const row = db.prepare("SELECT m.* FROM messages m JOIN conversations c ON m.conversation_id=c.id WHERE m.id=? AND (c.a=? OR c.b=?) AND m.expires_at>? AND c.archived_at IS NULL AND m.seq>c.history_from_seq AND c.a IN (SELECT id FROM users WHERE status='active') AND c.b IN (SELECT id FROM users WHERE status='active')").get(id, req.userId, req.userId, Date.now());
     if (!row) fail(404, '消息已删除、已过期或无权访问。');
     return row;
   }
@@ -145,46 +144,29 @@ export async function createWhisperServer(options = {}) {
     try { return (await stretch(secret, salt, 32, { N: 131072, r: 8, p: 1, maxmem: 192 * 1024 * 1024 })).toString('base64'); }
     finally { authBusy--; }
   }
-  app.get('/api/health', (_req, res) => res.json({ ok: true, app: 'Whisper', version: '0.2.0', instance, capabilities: ['message-history-v1'] }));
-  app.get('/api/auth/salt', (req, res) => {
-    const username = String(req.query.username || '').toLowerCase();
-    if (!USERNAME.test(username)) fail(400, '用户名需为 3–24 位小写字母、数字或下划线。');
-    const user = db.prepare('SELECT salt FROM users WHERE username=?').get(username);
-    res.json({ salt: user?.salt || createHmac('sha256', fakeSaltKey).update(username).digest().subarray(0, 16).toString('base64'), iterations: 600000 });
-  });
-  app.post('/api/auth/register', async (req, res) => {
-    const { username, invite, authKey, salt, publicKey, vault } = req.body;
-    if (!equal(invite || '', inviteCode)) fail(403, '邀请码不正确，请向网站所有者索取。');
-    if (typeof username !== 'string' || !USERNAME.test(username)) fail(400, '用户名需为 3–24 位小写字母、数字或下划线。');
-    base64(authKey, 32); base64(salt, 16); base64(publicKey, 32);
-    base64(vault?.nonce, 24); base64(vault?.ciphertext, 48);
-    if (db.prepare('SELECT COUNT(*) AS n FROM users').get().n >= 50) fail(403, '此实验站最多允许 50 个账号。');
-    if (db.prepare('SELECT id FROM users WHERE username=?').get(username)) fail(409, '用户名已被使用。');
-    const authSalt = randomBytes(16).toString('base64'); const verifier = await authHash(authKey, authSalt);
-    const id = randomUUID();
-    try { db.prepare('INSERT INTO users(id,username,public_key,salt,vault_nonce,vault_cipher,auth_salt,auth_hash,created_at) VALUES (?,?,?,?,?,?,?,?,?)').run(id, username, publicKey, salt, vault.nonce, vault.ciphertext, authSalt, verifier, Date.now()); }
-    catch (error) { if (String(error.message).includes('UNIQUE')) fail(409, '用户名已被使用。'); throw error; }
-    issueSession(req, res, id);
-    res.status(201).json(vaultUser(db.prepare('SELECT * FROM users WHERE id=?').get(id)));
-  });
-  app.post('/api/auth/login', async (req, res) => {
-    const { username, authKey } = req.body;
-    if (typeof username !== 'string' || !USERNAME.test(username)) fail(401, '用户名或密码不正确。');
-    base64(authKey, 32);
-    const user = db.prepare('SELECT * FROM users WHERE username=?').get(username);
-    const candidate = await authHash(authKey, user?.auth_salt || fakeSaltKey.toString('base64'));
-    if (!user || !equal(candidate, user.auth_hash)) fail(401, '用户名或密码不正确。');
-    issueSession(req, res, user.id); res.json(vaultUser(user));
-  });
-  app.post('/api/auth/logout', (req, res) => {
-    const token = sessionToken(req); if (token) sessions.delete(hash(token));
-    res.clearCookie('whisper_session', { path: '/', httpOnly: true, sameSite: 'strict', secure: originFor(req).startsWith('https:') });
-    res.json({ ok: true });
+  app.get('/api/health', (_req, res) => res.json({ ok: true, app: 'Whisper', version: '0.5.0', instance, registration: 'approval', passwordPolicy: { min: 1, max: 12 }, capabilities: ['message-history-v1', 'accounts-v2'] }));
+  function accountsFor(req) {
+    const origin = originFor(req);
+    const request = new Request(origin + req.originalUrl, { headers: Object.fromEntries(Object.entries(req.headers).map(([k,v]) => [k, Array.isArray(v) ? v.join(', ') : String(v || '')])) });
+    const viaTunnel = publicOrigin && origin === publicOrigin;
+    const ip = viaTunnel ? (req.get('cf-connecting-ip') || req.socket.remoteAddress) : req.socket.remoteAddress;
+    return accountService({ db: localStore(db), request, origin, body: req.body || {},
+      pepper: fakeSaltKey.toString('hex'), hashCredential: authHash, scheme: 'scrypt-v1',
+      ip, location: { estimated: true, source: viaTunnel ? 'Tunnel header; no precise location available' : 'Local connection; no IP location lookup' } });
+  }
+  app.use('/api', async (req, res, next) => {
+    if (!/^\/(auth|account|admin)\//.test(req.path)) return next();
+    try {
+      const response = await accountsFor(req).handle('/api' + req.path, req.method);
+      if (!response) return next();
+      for (const [k,v] of response.headers) res.set(k,v);
+      res.status(response.status).send(Buffer.from(await response.arrayBuffer()));
+    } catch (error) { next(error); }
   });
   app.get('/api/conversations', auth, (req, res) => {
     const rows = db.prepare(`SELECT c.id, c.a, c.b, c.created_at,
       COALESCE((SELECT MAX(m.created_at) FROM messages m WHERE m.conversation_id=c.id AND m.expires_at>?), c.created_at) AS updated
-      FROM conversations c WHERE c.a=? OR c.b=? ORDER BY updated DESC`).all(Date.now(), req.userId, req.userId);
+      FROM conversations c WHERE (c.a=? OR c.b=?) AND c.archived_at IS NULL AND c.a IN (SELECT id FROM users WHERE status='active') AND c.b IN (SELECT id FROM users WHERE status='active') ORDER BY updated DESC`).all(Date.now(), req.userId, req.userId);
     res.json(rows.map((c) => ({ id: c.id, peer: publicUser(db.prepare('SELECT * FROM users WHERE id=?').get(c.a === req.userId ? c.b : c.a)), updatedAt: c.updated })));
   });
   app.post('/api/conversations', auth, (req, res) => {
@@ -192,16 +174,17 @@ export async function createWhisperServer(options = {}) {
     if (Object.keys(req.body).some((k) => k !== 'username')) fail(400, '仅支持指定一个用户名的双人会话。');
     const username = req.body.username;
     if (typeof username !== 'string' || !USERNAME.test(username)) fail(400, '请输入对方完整用户名。');
-    const peer = db.prepare('SELECT * FROM users WHERE username=?').get(username);
+    const peer = db.prepare("SELECT * FROM users WHERE username=? AND role='member' AND status='active'").get(username);
     if (!peer || peer.id === req.userId) fail(404, '未找到该用户，或不能与自己聊天。');
     const [a, b] = [req.userId, peer.id].sort();
-    db.prepare('INSERT OR IGNORE INTO conversations VALUES (?,?,?,?)').run(randomUUID(), a, b, Date.now());
+    db.prepare('INSERT OR IGNORE INTO conversations(id,a,b,created_at) VALUES (?,?,?,?)').run(randomUUID(), a, b, Date.now());
+    db.prepare('UPDATE conversations SET history_from_seq=COALESCE((SELECT MAX(seq) FROM messages WHERE conversation_id=conversations.id),0),archived_at=NULL WHERE a=? AND b=? AND archived_at IS NOT NULL').run(a,b);
     const c = db.prepare('SELECT id FROM conversations WHERE a=? AND b=?').get(a, b);
     res.json({ id: c.id, peer: publicUser(peer), updatedAt: Date.now() });
   });
   app.get('/api/conversations/:id/messages', auth, (req, res) => {
-    conversation(req, req.params.id);
-    const rows = db.prepare('SELECT * FROM messages WHERE conversation_id=? AND expires_at>? ORDER BY seq DESC LIMIT 200').all(req.params.id, Date.now());
+    const view = conversation(req, req.params.id);
+    const rows = db.prepare('SELECT * FROM messages WHERE conversation_id=? AND expires_at>? AND seq>? ORDER BY seq DESC LIMIT 200').all(req.params.id, Date.now(), view.history_from_seq);
     res.json(rows.reverse().map((m) => envelope(m)));
   });
   // Optional, backwards-compatible ciphertext pagination for the terminal client.
@@ -212,17 +195,17 @@ export async function createWhisperServer(options = {}) {
     return number;
   }
   app.get('/api/conversations/:id/history', auth, (req, res) => {
-    conversation(req, req.params.id);
+    const view = conversation(req, req.params.id);
     const before = sequence(req.query.beforeSeq);
-    const rows = db.prepare('SELECT * FROM messages WHERE conversation_id=? AND seq<? AND expires_at>? ORDER BY seq DESC LIMIT 201').all(req.params.id, before, Date.now());
+    const rows = db.prepare('SELECT * FROM messages WHERE conversation_id=? AND seq<? AND expires_at>? AND seq>? ORDER BY seq DESC LIMIT 201').all(req.params.id, before, Date.now(), view.history_from_seq);
     res.json({ messages: rows.slice(0, 200).reverse().map((m) => envelope(m)), hasMore: rows.length > 200 });
   });
   app.get('/api/conversations/:id/message-state', auth, (req, res) => {
-    conversation(req, req.params.id);
+    const view = conversation(req, req.params.id);
     const from = sequence(req.query.fromSeq), through = sequence(req.query.throughSeq);
     if (through < from) fail(400, '无效的消息范围。');
     // Only IDs/lifecycle metadata. Images must not be claimed by scrolling.
-    const rows = db.prepare('SELECT id,seq,consumed_at,expires_at FROM messages WHERE conversation_id=? AND seq>=? AND seq<=? AND expires_at>? ORDER BY seq LIMIT 10000').all(req.params.id, from, through, Date.now());
+    const rows = db.prepare('SELECT id,seq,consumed_at,expires_at FROM messages WHERE conversation_id=? AND seq>=? AND seq<=? AND expires_at>? AND seq>? ORDER BY seq LIMIT 10000').all(req.params.id, from, through, Date.now(), view.history_from_seq);
     res.json(rows.map((m) => ({ id: m.id, seq: m.seq, consumedAt: m.consumed_at, expiresAt: m.expires_at })));
   });
   app.post('/api/conversations/:id/messages', auth, (req, res) => {
@@ -282,7 +265,7 @@ export async function createWhisperServer(options = {}) {
   const localUrl = `http://127.0.0.1:${httpServer.address().port}`;
   allowed.add(localUrl); allowed.add(`http://localhost:${httpServer.address().port}`);
   return {
-    localUrl, instance, inviteCode, dataDir, db,
+    localUrl, instance, dataDir, db,
     setPublicOrigin(url) {
       const parsed = new URL(url);
       if (parsed.protocol !== 'https:' || !/^[a-z0-9-]+\.trycloudflare\.com$/.test(parsed.hostname) || parsed.port) throw new Error('Invalid tunnel origin');

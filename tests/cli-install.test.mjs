@@ -4,16 +4,19 @@ import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, rmSync
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawn, execFileSync } from 'node:child_process';
-import { createServer } from 'node:http';
+import { createServer, get } from 'node:http';
 import { pathToFileURL } from 'node:url';
 import { createWhisperServer } from '../server/app.mjs';
 import { installCommand } from '../public/cli-command.mjs';
 const shell = join(process.env.SystemRoot, 'System32/WindowsPowerShell/v1.0/powershell.exe');
+const windowsPowerShellModules = join(process.env.SystemRoot, 'System32/WindowsPowerShell/v1.0/Modules');
 const release = JSON.parse(readFileSync('public/downloads/manifest.json'));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 function run(exe, args, options = {}) {
   return new Promise((resolveRun, reject) => {
-    const p = spawn(exe, args, { cwd: resolve('.'), windowsHide: true, ...options }); let out = '';
+    const spawnOptions = { cwd: resolve('.'), windowsHide: true, ...options };
+    if (exe === shell) spawnOptions.env = { ...(options.env || process.env), PSModulePath: windowsPowerShellModules };
+    const p = spawn(exe, args, spawnOptions); let out = '';
     p.stdout?.on('data', (b) => { out += b; }); p.stderr?.on('data', (b) => { out += b; });
     const timer = setTimeout(() => { p.kill(); reject(new Error('child timeout')); }, 180000);
     p.on('error', (e) => { clearTimeout(timer); reject(e); });
@@ -37,7 +40,7 @@ test('PowerShell command install, repeat install, integrity failure, installed C
   try {
     const result = await run(shell, ['-NoProfile', '-Command', command + '; whisper --version; (Get-Command whisper).Source'], { env });
     assert.equal(result.code, 0, result.out); assert.ok(existsSync(bin), result.out);
-    assert.ok(result.out.includes('Whisper CLI ' + release.version)); assert.ok(result.out.includes(bin));
+    assert.ok(result.out.includes('Whisper CLI ' + release.version), result.out); assert.ok(result.out.includes(bin), result.out);
     const marker = JSON.parse(readFileSync(join(home, 'installed.json')));
     assert.equal(marker.pathAdded, false); assert.equal(marker.sha256, release.sha256);
     assert.equal(JSON.parse(readFileSync(join(home, 'settings.json'))).server, app.localUrl);
@@ -86,7 +89,13 @@ test('start.cmd prints CLI instructions and stop clears them, using isolated loc
     const commands = readFileSync(join(dir, 'cli-commands.txt'), 'utf8');
     assert.ok(commands.includes('Get-FileHash')); assert.ok(commands.includes('whisper --server')); assert.ok(commands.includes(state.localUrl));
     await sleep(300); assert.ok(output.includes('Get-FileHash'), output);
-    assert.equal((await (await fetch(state.localUrl + '/api/health')).json()).instance, state.instance);
+    const health = await new Promise((resolveHealth, reject) => {
+      get(state.localUrl + '/api/health', response => {
+        let body = ''; response.on('data', chunk => { body += chunk; });
+        response.on('end', () => { try { resolveHealth(JSON.parse(body)); } catch (error) { reject(error); } });
+      }).on('error', reject);
+    });
+    assert.equal(health.instance, state.instance);
     const stop = await run(process.execPath, ['scripts/stop.mjs'], { env }); assert.equal(stop.code, 0, stop.out);
     const until = Date.now() + 10000; while (existsSync(join(dir, 'runtime.json')) && Date.now() < until) await sleep(100);
     assert.equal(existsSync(join(dir, 'runtime.json')), false);

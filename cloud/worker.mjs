@@ -1,3 +1,4 @@
+import { accountService } from '../accounts/service.mjs';
 import { fail, USERNAME, UUID, randomB64, digest, mac, equal, validB64, sequence, requestOrigin, requireWrite, readJSON, SECURITY_HEADERS } from './security.mjs';
 import { serveClientArchive } from './downloads.mjs';
 const DAY=86400000;
@@ -18,7 +19,7 @@ async function api(request,env,origin) {
   const url=new URL(request.url), path=url.pathname, method=request.method;
   if (path==='/api/health' && method==='GET') return json({ok:true,app:'Whisper',version:__APP_VERSION__,
     instance:env.INSTANCE_ID,environment:'cloud',commit:__COMMIT__,pollIntervalMs:5000,
-    capabilities:['message-history-v1','cloud-d1-v1']});
+    registration:'approval',passwordPolicy:{min:1,max:12},capabilities:['message-history-v1','cloud-d1-v1','accounts-v2']});
   const ip=request.headers.get('CF-Connecting-IP')||'local';
   await limit(env.API_LIMIT,await digest('api:'+ip),env);
   const db=env.DB.withSession ? env.DB.withSession('first-primary') : env.DB;
@@ -28,91 +29,56 @@ async function api(request,env,origin) {
   let body={}; if(!['GET','HEAD'].includes(method)) {
     requireWrite(request,origin); body=await readJSON(request, /^\/api\/conversations\/[^/]+\/messages$/.test(path)?1950000:8192);
   }
-  async function issue(userId) {
-    const token=randomB64(32).replaceAll('+','-').replaceAll('/','_').replace(/=+$/,'');
-    const old=cookieToken(request), commands=[];
-    if(old) commands.push(stmt('DELETE FROM sessions WHERE token_hash=?',await digest(old)));
-    commands.push(stmt('INSERT INTO sessions(token_hash,user_id,created_at,expires_at) VALUES(?,?,?,?)',await digest(token),userId,Date.now(),Date.now()+43200000));
-    await db.batch(commands); return {'Set-Cookie':cookie(token,origin)};
-  }
-  if(path.startsWith('/api/auth/')) {
-    await limit(env.AUTH_LIMIT,await digest('auth-ip:'+ip),env);
-    if(path==='/api/auth/salt' && method==='GET') {
-      const username=(url.searchParams.get('username')||'').toLowerCase();
-      if(!USERNAME.test(username)) fail(400,'用户名需为 3–24 位小写字母、数字或下划线。');
-      const u=await first('SELECT salt FROM users WHERE username=?',username);
-      const fake=await mac(env.AUTH_PEPPER,'fake-salt-v1',username);
-      return json({salt:u?.salt||btoa(atob(fake).slice(0,16)),iterations:600000});
-    }
-    if(path==='/api/auth/logout' && method==='POST') {
-      const token=cookieToken(request); if(token)await stmt('DELETE FROM sessions WHERE token_hash=?',await digest(token)).run();
-      return json({ok:true},200,{'Set-Cookie':cookie('',origin,0)});
-    }
-    if(path==='/api/auth/register' && method==='POST') fail(503,'账号申请升级中，请稍后再试。');
-    if(method==='POST' && ['/api/auth/login','/api/auth/register'].includes(path)) {
-      const {username,authKey}=body;
-      if(typeof username!=='string'||!USERNAME.test(username)) fail(400,'用户名需为 3–24 位小写字母、数字或下划线。');
-      validB64(authKey,32);
-      await limit(env.AUTH_LIMIT,await digest('auth-user:'+username),env);
-      if(path.endsWith('/register')) {
-        if(!env.INVITE_CODE || !equal(body.invite,env.INVITE_CODE)) fail(403,'邀请码不正确，请向网站所有者索取。');
-        validB64(body.salt,16); validB64(body.publicKey,32); validB64(body.vault?.nonce,24); validB64(body.vault?.ciphertext,48);
-        const id=crypto.randomUUID(),authSalt=randomB64(16);
-        const verifier=await mac(env.AUTH_PEPPER,'auth-v1',username,authSalt,authKey);
-        try { await stmt('INSERT INTO users(id,username,public_key,salt,vault_nonce,vault_cipher,auth_salt,auth_hash,created_at) VALUES(?,?,?,?,?,?,?,?,?)',id,username,body.publicKey,body.salt,body.vault.nonce,body.vault.ciphertext,authSalt,verifier,Date.now()).run(); }
-        catch(error) { if(String(error).includes('UNIQUE'))fail(409,'用户名已被使用。'); if(String(error).includes('USER_CAP'))fail(403,'此实验站最多允许 50 个账号。'); throw error; }
-        const u=await first('SELECT * FROM users WHERE id=?',id); return json(vaultUser(u),201,await issue(id));
-      }
-      const u=await first('SELECT * FROM users WHERE username=?',username);
-      const candidate=await mac(env.AUTH_PEPPER,'auth-v1',username,u?.auth_salt||'unknown',authKey);
-      if(!u || !equal(candidate,u.auth_hash))fail(401,'用户名或密码不正确。');
-      return json(vaultUser(u),200,await issue(u.id));
-    }
-    fail(404,'接口不存在。');
-  }
-  const token=cookieToken(request);
-  const session=token?await first('SELECT user_id FROM sessions WHERE token_hash=? AND expires_at>?',await digest(token),Date.now()):null;
-  if(!session)fail(401,'登录已过期，请重新登录。');
-  const userId=session.user_id;
+  if(path.startsWith('/api/auth/')) await limit(env.AUTH_LIMIT,await digest('auth-ip:'+ip),env);
+  const cf = request.cf || {};
+  const clean = value => typeof value === 'string' ? value.slice(0, 120) : '';
+  const location = { country: clean(cf.country), region: clean(cf.region), city: clean(cf.city),
+    postalCode: clean(cf.postalCode), timezone: clean(cf.timezone), estimated: true,
+    source: env.ENVIRONMENT === 'test' ? 'test' : 'Cloudflare IP geolocation' };
+  const accounts = accountService({ db, request, origin, body, pepper: env.AUTH_PEPPER, ip, location });
+  const handled = await accounts.handle(path, method);
+  if (handled) return handled;
+  const actor = await accounts.authorize({ memberOnly: true }), userId = actor.id;
   const conversation=async(id)=>{
-    const c=await first('SELECT * FROM conversations WHERE id=? AND (a=? OR b=?)',id,userId,userId);
+    const c=await first("SELECT c.* FROM conversations c JOIN users a ON a.id=c.a JOIN users b ON b.id=c.b WHERE c.id=? AND (c.a=? OR c.b=?) AND c.archived_at IS NULL AND a.status='active' AND b.status='active'",id,userId,userId);
     if(!c)fail(404,'会话不存在或无权访问。'); return c;
   };
   const message=async(id)=>{
-    const m=await first('SELECT m.* FROM messages m JOIN conversations c ON m.conversation_id=c.id WHERE m.id=? AND (c.a=? OR c.b=?) AND m.expires_at>?',id,userId,userId,Date.now());
+    const m=await first("SELECT m.* FROM messages m JOIN conversations c ON m.conversation_id=c.id JOIN users a ON a.id=c.a JOIN users b ON b.id=c.b WHERE m.id=? AND (c.a=? OR c.b=?) AND m.expires_at>? AND c.archived_at IS NULL AND m.seq>c.history_from_seq AND a.status='active' AND b.status='active'",id,userId,userId,Date.now());
     if(!m)fail(404,'消息已删除、已过期或无权访问。');return m;
   };
   if(path==='/api/conversations') {
     if(method==='GET') {
-      const rows=await all('SELECT c.id,c.updated_at,u.id AS peer_id,u.username,u.public_key FROM conversations c JOIN users u ON u.id=CASE WHEN c.a=? THEN c.b ELSE c.a END WHERE c.a=? OR c.b=? ORDER BY c.updated_at DESC',userId,userId,userId);
+      const rows=await all("SELECT c.id,c.updated_at,u.id AS peer_id,u.username,u.public_key FROM conversations c JOIN users u ON u.id=CASE WHEN c.a=? THEN c.b ELSE c.a END WHERE (c.a=? OR c.b=?) AND c.archived_at IS NULL AND u.status='active' AND u.role='member' ORDER BY c.updated_at DESC",userId,userId,userId);
       return json(rows.map(c=>({id:c.id,peer:{id:c.peer_id,username:c.username,publicKey:c.public_key},updatedAt:c.updated_at})));
     }
     if(method==='POST') {
       if(Object.keys(body).some(k=>k!=='username') || !USERNAME.test(body.username||''))fail(400,'仅支持指定一个用户名的双人会话。');
-      const peer=await first('SELECT * FROM users WHERE username=?',body.username);
+      const peer=await first("SELECT * FROM users WHERE username=? AND status='active' AND role='member'",body.username);
       if(!peer || peer.id===userId)fail(404,'未找到该用户，或不能与自己聊天。');
       const [a,b]=[userId,peer.id].sort(), now=Date.now();
       await stmt('INSERT OR IGNORE INTO conversations(id,a,b,created_at,updated_at) VALUES(?,?,?,?,?)',crypto.randomUUID(),a,b,now,now).run();
+      await stmt('UPDATE conversations SET history_from_seq=COALESCE((SELECT MAX(seq) FROM messages WHERE conversation_id=conversations.id),0),archived_at=NULL WHERE a=? AND b=? AND archived_at IS NOT NULL',a,b).run();
       const c=await first('SELECT id FROM conversations WHERE a=? AND b=?',a,b);
       return json({id:c.id,peer:publicUser(peer),updatedAt:now});
     }
   }
   const cm=/^\/api\/conversations\/([^/]+)\/(messages|history|message-state|clear)$/.exec(path);
   if(cm) {
-    const id=cm[1],action=cm[2]; await conversation(id);
+    const id=cm[1],action=cm[2]; const selected=await conversation(id);
     if(method==='GET' && action==='messages') {
-      const rows=await all('SELECT * FROM messages WHERE conversation_id=? AND expires_at>? ORDER BY seq DESC LIMIT 200',id,Date.now());
+      const rows=await all('SELECT * FROM messages WHERE conversation_id=? AND expires_at>? AND seq>? ORDER BY seq DESC LIMIT 200',id,Date.now(),selected.history_from_seq);
       return json(rows.reverse().map(envelope));
     }
     if(method==='GET' && action==='history') {
       const before=sequence(url.searchParams.get('beforeSeq'));
-      const rows=await all('SELECT * FROM messages WHERE conversation_id=? AND seq<? AND expires_at>? ORDER BY seq DESC LIMIT 201',id,before,Date.now());
+      const rows=await all('SELECT * FROM messages WHERE conversation_id=? AND seq<? AND expires_at>? AND seq>? ORDER BY seq DESC LIMIT 201',id,before,Date.now(),selected.history_from_seq);
       return json({messages:rows.slice(0,200).reverse().map(envelope),hasMore:rows.length>200});
     }
     if(method==='GET' && action==='message-state') {
       const from=sequence(url.searchParams.get('fromSeq')),through=sequence(url.searchParams.get('throughSeq'));
       if(through<from)fail(400,'无效的消息范围。');
-      const rows=await all('SELECT id,seq,consumed_at,expires_at FROM messages WHERE conversation_id=? AND seq>=? AND seq<=? AND expires_at>? ORDER BY seq LIMIT 10000',id,from,through,Date.now());
+      const rows=await all('SELECT id,seq,consumed_at,expires_at FROM messages WHERE conversation_id=? AND seq>=? AND seq<=? AND expires_at>? AND seq>? ORDER BY seq LIMIT 10000',id,from,through,Date.now(),selected.history_from_seq);
       return json(rows.map(m=>({id:m.id,seq:m.seq,consumedAt:m.consumed_at,expiresAt:m.expires_at})));
     }
     if(method==='POST' && action==='clear') {
@@ -141,7 +107,7 @@ async function api(request,env,origin) {
     if(!mm[2] && method==='DELETE') {await stmt('DELETE FROM messages WHERE id=?',m.id).run();return json({ok:true});}
     if(mm[2] && method==='POST') {
       if(m.type!=='image'||m.sender_id===userId)fail(403,'只有接收方可以打开阅后图片。');
-      const payload=await first('DELETE FROM image_payloads WHERE message_id=? AND EXISTS (SELECT 1 FROM messages m JOIN conversations c ON c.id=m.conversation_id WHERE m.id=image_payloads.message_id AND (c.a=? OR c.b=?) AND m.sender_id<>? AND m.expires_at>? AND m.consumed_at IS NULL) RETURNING nonce,ciphertext',m.id,userId,userId,userId,Date.now());
+      const payload=await first("DELETE FROM image_payloads WHERE message_id=? AND EXISTS (SELECT 1 FROM messages m JOIN conversations c ON c.id=m.conversation_id JOIN users a ON a.id=c.a JOIN users b ON b.id=c.b WHERE m.id=image_payloads.message_id AND (c.a=? OR c.b=?) AND m.sender_id<>? AND m.expires_at>? AND m.consumed_at IS NULL AND c.archived_at IS NULL AND m.seq>c.history_from_seq AND a.status='active' AND b.status='active') RETURNING nonce,ciphertext",m.id,userId,userId,userId,Date.now());
       if(!payload)fail(410,'图片已经被打开、过期或删除。');
       return json({...envelope(m),nonce:payload.nonce,ciphertext:payload.ciphertext});
     }

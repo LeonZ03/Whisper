@@ -1,5 +1,5 @@
 import { TTL, normalizeServer } from './client.mjs';
-const SIMPLE = new Set(['/login', '/register', '/chats', '/safety', '/clear', '/refresh', '/web', '/logout', '/help', '/quit']);
+const SIMPLE = new Set(['/login', '/register', '/passwd', '/recover', '/chats', '/safety', '/clear', '/refresh', '/web', '/logout', '/help', '/quit']);
 // Only syntactically valid commands are eligible for in-memory recall.
 export function historyCommand(command, argument) {
   if (SIMPLE.has(command)) return argument ? null : command;

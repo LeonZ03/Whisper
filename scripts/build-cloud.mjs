@@ -34,6 +34,7 @@ function dependency(name) {
 }
 for(const n of ['application.mjs','client.mjs','index.mjs','terminal.mjs','theme.mjs','transcript.mjs'])copy(join(root,'cli',n),'cli/'+n);
 copy(join(root,'src/crypto.mjs'),'src/crypto.mjs');
+copy(join(root,'src/account-client.mjs'),'src/account-client.mjs');
 for(const n of ['whisper.cmd','README.txt','uninstall.ps1'])copy(join(root,'client-distribution',n),n);
 copy(join(root,'client-distribution/remote-entry.mjs'),'cli/remote-entry.mjs');
 dependency('libsodium-wrappers');dependency('string-width');

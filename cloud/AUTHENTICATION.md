@@ -1,55 +1,31 @@
-# Cloud authentication and storage boundary
+# 云端认证与账号数据边界
 
-This is a new empty cloud deployment, not a migration of local accounts.
-The E2EE protocol and `src/crypto.mjs` are unchanged. This document is a design
-record, not an independent security audit.
+本文说明当前源码中的认证设计，不是独立安全审计。云端和本机是两套独立账号、密钥与聊天数据；任何账号迁移都必须另行设计。
 
-## Credential verification
+## 密码派生与身份
 
-The browser/CLI still runs PBKDF2-HMAC-SHA256 with 600,000 iterations and a
-per-user 16-byte salt, then uses domain-separated HKDF for the 256-bit `authKey`
-and the vault encryption key. Only `authKey` is submitted over HTTPS. The vault
-key and decrypted identity private key remain on the client.
+新密码在客户端先做 Unicode NFC 规范化，长度按 Unicode 码点计为 1–12。此限制只用于注册、改密和恢复设新密码；服务端登录路径不限制旧密码长度，以兼容既有较长密码。短密码极易被猜测。
 
-The local server's additional scrypt verification needs about 128 MiB before
-runtime overhead. Cloud Workers cannot safely run that within a 128 MB isolate.
-The cloud server instead treats `authKey` as a password-derived authentication
-credential and stores a domain-separated HMAC-SHA256 verifier, using a random
-32-byte server pepper stored in Workers Secrets, a per-account random salt,
-and the username. It does NOT store a bare hash or the reusable `authKey`.
+`src/crypto.mjs` 将规范化密码以 PBKDF2-HMAC-SHA256 派生 256 位主密钥，使用每账号 16 字节随机 salt 和 600,000 次迭代；随后以 HKDF-SHA256 和不同固定上下文标签导出 `authKey` 与 vault 加密密钥。客户端提交派生的 `authKey`，不提交原密码。随机生成的 X25519 密钥对中，私钥使用 libsodium `crypto_secretbox_easy` 与 vault 密钥加密后存储；消息使用 libsodium `crypto_box_easy`，把完整消息载荷加密给对端公钥。改密会重新加密同一私钥，保留身份。
 
-A database-only attacker cannot check the HMAC without the separate pepper.
-The encrypted vault is still an offline password-guessing target: its protection
-remains the same 600,000-iteration client KDF, even on the local implementation.
-An attacker obtaining both the pepper and database can test guesses after that
-client KDF; the extra local scrypt work factor is NOT present in the cloud.
-This explicit tradeoff is not a claim of cryptographic equivalence. Long unique
-passwords, invitation-only registration, rate limits and endpoint security remain
-necessary. Never reduce the client KDF or expose AUTH_PEPPER to browser/build assets.
+云端使用由 Workers Secret `AUTH_PEPPER` 密钥化、带用途分隔的 HMAC-SHA256 校验值，不存储裸密码哈希或可复用的 `authKey`。客户端 vault 密文仍可用于离线猜密码：只拿到数据库的攻击者无法验证 HMAC 而缺少 pepper，但可针对 vault 猜测；同时拿到数据库和 pepper 后，仍可对猜测运行客户端 KDF。云端没有本机额外 scrypt 工作因子。保持 pepper 稳定，替换会使现有登录校验失效。
 
-## Operational rules
+## 申请、管理员与恢复
 
-AUTH_PEPPER must remain stable across code deployments. Replacing it changes
-all account verifiers and requires a separate recovery/migration design. Never
-reuse this pepper as an invitation code, cookie token or client encryption key.
-Session tokens are random; only their SHA-256 hashes are stored in D1. Expiry and
-revocation are checked on each authenticated request. Cookies remain host-only,
-HttpOnly, SameSite=Strict, and Secure on HTTPS.
+成员提交申请后处于待审批状态，批准前不能登录。申请说明由管理员可见且服务端明文保存，不是端到端加密数据。无邀请码。
 
-Native Workers rate limits apply by edge location and are not an exact global
-abuse or spending limit. Registration is capped at 50 accounts, stored messages
-at 10,000 and encrypted payload bytes at 300,000,000. These caps do not replace
-Cloudflare request/CPU/storage quotas or operational monitoring.
+首次初始化 root 的所有者工具为 `node scripts/manage-root.mjs --local` 或 `node scripts/manage-root.mjs --cloud`；首次密码固定为 `0000`。工具在本机 `data/` 生成随机文件名的私密一次性激活码，首次网页登录必须提供，并立即改密。不要把该文件纳入 Git、备份分享或发布包。root 恢复分别使用 `--local --recover` 或 `--cloud --recover`，会替换 root 身份并撤销旧 root 会话；不得通过清库或重建数据库恢复。
 
-D1 Time Travel can retain ciphertext that has been removed from active tables.
-A backup restore may resurrect previously deleted messages or consumed image
-payloads. Do not expose a restored database without a reviewed procedure that
-prevents those historical payloads from being served again. This first release
-does not automate production backup restores or claim irreversible erasure.
+所有者可为成员发放一次性恢复码。使用后账号拥有新身份密钥，旧会话被封存，旧私钥无法恢复，因此旧消息不能解密，联系人必须重新核对安全码。改密码保留身份；忘密恢复不保留身份。安全码只是以双方账号 ID 和公钥计算的 SHA-256 指纹，不是密钥或身份凭据。若对方换身份，必须通过独立可信渠道重新核对。
 
-References (recheck before changing runtime assumptions):
-- https://developers.cloudflare.com/workers/platform/limits/
-- https://developers.cloudflare.com/workers/configuration/secrets/
-- https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/
-- https://developers.cloudflare.com/d1/reference/time-travel/
-- https://nodejs.org/api/crypto.html#cryptoscryptpassword-salt-keylen-options-callback
+拒绝或移除账号采用软删除，禁用账号、撤销会话并封存相关会话；保留身份墓碑，已有密文按原期限清理。此操作不是物理擦除承诺；云端数据库历史备份可能保留旧密文。
+
+## 日志与元数据
+
+应用需要来源 IP 做短期速率限制；云端也使用 Cloudflare 边缘限流。账号失败次数的数据库范围键为用户名摘要。root 登录日志记录功能启用后、到达应用的 root 登录尝试时间、IP 与估计位置；不是全站请求日志，不覆盖未到达应用的网络连接失败。当前没有配置该日志的自动保留期限。位置来自网络估算，不代表实际住址。申请说明、账号状态及管理审计记录是服务端可读的元数据。消息正文在客户端加密，但服务端和转发方可能看到 IP、时间、大小、通信关系、会话及消息期限等信息。
+
+Workers 限流按边缘位置工作，不是精确全局防滥用或费用上限。Workers Secrets 中的 `AUTH_PEPPER` 必须保持稳定，不能进入浏览器资源、构建产物或客户端包。会话 Cookie 为随机令牌，D1 只存 SHA-256 摘要，使用 Secure（HTTPS）、HttpOnly、SameSite=Strict 属性。
+
+## 迁移与发布
+
+涉及显式会话凭据版本列、停用旧直接注册、数据库迁移和完整代码发布时，按 `DEPLOYMENT.md` 的分阶段步骤执行。数据库迁移与普通代码推送分开；代码回滚不能重新开放旧直接注册，也不能回滚或重置生产数据库。

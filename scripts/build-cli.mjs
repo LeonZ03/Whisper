@@ -8,7 +8,7 @@ const root = fileURLToPath(new URL('../', import.meta.url));
 const hash = (file) => createHash('sha256').update(readFileSync(file)).digest('hex');
 if (process.platform !== 'win32' || process.arch !== 'x64') throw new Error('Build on Windows x64 with Node.js 24+.');
 if (Number(process.versions.node.split('.')[0]) < 24) throw new Error('Node.js 24+ required.');
-const inputs = ['cli', 'src/crypto.mjs', 'client-distribution', 'package-lock.json', 'scripts/build-cli.mjs'];
+const inputs = ['cli', 'src/crypto.mjs', 'src/account-client.mjs', 'client-distribution', 'package-lock.json', 'scripts/build-cli.mjs'];
 const fingerprint = createHash('sha256').update(hash(process.execPath));
 function digestInput(path, label) {
   if (lstatSync(path).isSymbolicLink()) throw new Error('Linked build input');
@@ -24,7 +24,10 @@ try {
   }
 } catch {}
 const shell = join(process.env.SystemRoot, 'System32/WindowsPowerShell/v1.0/powershell.exe');
-const signature = JSON.parse(execFileSync(shell, ['-NoProfile', '-Command', '$s=Get-AuthenticodeSignature $env:WHISPER_BUILD_NODE; @{status=[string]$s.Status;signer=$s.SignerCertificate.Subject}|ConvertTo-Json -Compress'], { encoding: 'utf8', env: { ...process.env, WHISPER_BUILD_NODE: process.execPath } }));
+// A PowerShell 7 parent can put its modules ahead of Windows PowerShell's
+// built-ins. Load only the latter for the required Authenticode check.
+const signatureEnv = { ...process.env, PSModulePath: join(process.env.SystemRoot, 'System32/WindowsPowerShell/v1.0/Modules'), WHISPER_BUILD_NODE: process.execPath };
+const signature = JSON.parse(execFileSync(shell, ['-NoProfile', '-Command', '$s=Get-AuthenticodeSignature $env:WHISPER_BUILD_NODE; @{status=[string]$s.Status;signer=$s.SignerCertificate.Subject}|ConvertTo-Json -Compress'], { encoding: 'utf8', env: signatureEnv }));
 if (signature.status !== 'Valid' || !signature.signer?.includes('OpenJS Foundation')) throw new Error('Node runtime signature is not valid; refusing to distribute it.');
 const work = mkdtempSync(join(tmpdir(), 'whisper-portable-build-'));
 const destination = join(work, 'Whisper-CLI');
@@ -50,6 +53,7 @@ try {
   // Deliberate allowlist. Never copy the project, data/, server/, tests/ or devDependencies.
   for (const name of ['application.mjs', 'client.mjs', 'index.mjs', 'terminal.mjs', 'theme.mjs', 'transcript.mjs']) safeCopy(join(root, 'cli', name), join(destination, 'cli', name));
   safeCopy(join(root, 'src/crypto.mjs'), join(destination, 'src/crypto.mjs'));
+  safeCopy(join(root, 'src/account-client.mjs'), join(destination, 'src/account-client.mjs'));
   for (const name of ['whisper.cmd', 'README.txt', 'uninstall.ps1']) safeCopy(join(root, 'client-distribution', name), join(destination, name));
   safeCopy(join(root, 'client-distribution/remote-entry.mjs'), join(destination, 'cli/remote-entry.mjs'));
   copyDependency('libsodium-wrappers'); copyDependency('string-width');

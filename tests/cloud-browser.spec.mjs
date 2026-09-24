@@ -9,13 +9,17 @@ test('cloud Worker: real browser and CLI share encrypted messages and countdowns
   const bob=new WhisperClient({server:app.url});
   const errors=[];page.on('pageerror',e=>errors.push(e.message));
   page.on('dialog',d=>d.accept());
-  const password='Isolated-Cloud-Browser-Test!2026';
+  const password='CloudWeb26!';
   try {
-    await bob.authenticate({username:'cloud_bobby',password,invite:app.invite,register:true});
+    await bob.authenticate({username:'cloud_bobby',password,register:true}); await app.approve('cloud_bobby');
+    await bob.authenticate({username:'cloud_bobby',password});
     await page.goto(app.url);await expect(page.locator('#auth-submit')).toBeEnabled();
     await page.locator('#register-tab').click();await page.locator('#username').fill('cloud_alice');
-    await page.locator('#password').fill(password);await page.locator('#invite').fill(app.invite);
-    await page.locator('#auth-submit').click();await expect(page.locator('#chat-screen')).toBeVisible({timeout:20000});
+    await page.locator('#password').fill(password);
+    await page.locator('#auth-submit').click();await expect(page.locator('#toast')).toContainText('等待管理员审批');
+    await app.approve('cloud_alice'); await page.locator('#login-tab').click();
+    await page.locator('#username').fill('cloud_alice');await page.locator('#password').fill(password);await page.locator('#auth-submit').click();
+    await expect(page.locator('#chat-screen')).toBeVisible({timeout:20000});
     await expect(page.locator('#entry-kind')).toHaveText('云端服务');
     await page.locator('#peer-name').fill('cloud_bobby');await page.getByRole('button',{name:'开始会话',exact:true}).click();
     await expect(page.locator('#peer-title')).toHaveText('cloud_bobby');

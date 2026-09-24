@@ -1,5 +1,7 @@
-import { ready, b64, unb64, wipe, randomSalt, deriveCredentials, createIdentity, unlockIdentity, encryptMessage, decryptMessage, safetyCode } from './crypto.mjs';
+import { ready, b64, unb64, wipe, deriveCredentials, unlockIdentity, encryptMessage, decryptMessage, safetyCode } from './crypto.mjs';
 import { MessageLifecycle } from './message-lifecycle.mjs';
+import { accountUI } from './account-ui.mjs';
+import { prepareEnrollment, validateNewPassword } from './account-client.mjs';
 const $ = (id) => document.getElementById(id);
 let self = null, selected = null, conversations = [], messages = [], mode = 'login';
 let syncing = false, generation = 0, toastTimer, signature = '', imageTimer, imageUrl, viewingId, safetyPeer;
@@ -12,11 +14,24 @@ const lifecycle = new MessageLifecycle($('messages'), (id) => {
 });
 function clearMessageView() { lifecycle.clear(); messageCards.clear(); messages = []; signature = ''; }
 const pins = () => {
-  try { return JSON.parse(localStorage.getItem(`whisper:public-key-pins:${self.id}`) || '{}'); } catch { return {}; }
+  try {
+    const key = `whisper:public-key-pins:${self.id}:${self.publicKey}`;
+    const scoped = localStorage.getItem(key);
+    if (scoped !== null) return JSON.parse(scoped);
+    // Preserve legacy peer keys after the scope gains our identity public key.
+    // Reverification is required because a forgotten-password reset changes it.
+    const legacy = JSON.parse(localStorage.getItem(`whisper:public-key-pins:${self.id}`) || '{}');
+    const migrated = Object.fromEntries(Object.entries(legacy).map(([id, pin]) => [id, { ...pin, verified: false }]));
+    localStorage.setItem(key, JSON.stringify(migrated)); return migrated;
+  } catch { return {}; }
 };
-function savePin(peer, verified = false) {
+function savePin(peer, verified = false, replaceAfterVerification = false) {
   const data = pins(); data[peer.id] = { publicKey: peer.publicKey, verified };
-  try { localStorage.setItem(`whisper:public-key-pins:${self.id}`, JSON.stringify(data)); }
+  const prior = pins()[peer.id];
+  if (prior?.publicKey !== peer.publicKey && prior && replaceAfterVerification) {
+    data[peer.id].previous = [...(prior.previous || []), prior.publicKey].slice(-8);
+  }
+  try { localStorage.setItem(`whisper:public-key-pins:${self.id}:${self.publicKey}`, JSON.stringify(data)); }
   catch { toast('浏览器禁止本地存储，安全码核对状态无法保存。'); }
 }
 function toast(text) { $('toast').textContent = text; $('toast').hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => $('toast').hidden = true, 4500); }
@@ -32,57 +47,78 @@ async function api(path, method = 'GET', body) {
   return result;
 }
 function setMode(next) {
-  mode = next; $('invite-field').hidden = mode !== 'register'; $('invite').required = mode === 'register';
-  $('password').minLength = mode === 'register' ? 12 : 1;
+  mode = next; $('register-fields').hidden = mode !== 'register';
+  $('activation-field').hidden = mode !== 'login' || $('username').value.trim().toLowerCase() !== 'root';
+  $('password').minLength = 1;
   $('password').autocomplete = mode === 'register' ? 'new-password' : 'current-password';
-  $('password').placeholder = mode === 'register' ? '至少 12 个字符，请使用长密码' : '请输入密码';
-  $('auth-title').textContent = mode === 'register' ? '给自己一个新名字' : '回到你的会话';
-  $('auth-subtitle').textContent = mode === 'register' ? '使用邀请码加入。身份密钥将在你的浏览器生成。' : '使用用户名和密码登录，并在本机解锁密钥。';
-  $('auth-submit').textContent = mode === 'register' ? '创建账号并进入' : '解锁并进入';
+  $('password').placeholder = mode === 'register' ? '新密码：1–12 个字符' : '请输入完整密码（旧长密码仍可登录）';
+  $('auth-title').textContent = mode === 'register' ? '申请一个账号' : '回到你的会话';
+  $('auth-subtitle').textContent = mode === 'register' ? '管理员批准后才能登录。身份密钥将在你的浏览器生成。' : '使用用户名和密码登录，并在本机解锁密钥。';
+  $('auth-submit').textContent = mode === 'register' ? '提交申请' : '解锁并进入';
   $('auth-error').textContent = '';
   for (const item of ['login', 'register']) { $(`${item}-tab`).classList.toggle('active', item === mode); $(`${item}-tab`).setAttribute('aria-selected', String(item === mode)); }
 }
 $('login-tab').onclick = () => setMode('login'); $('register-tab').onclick = () => setMode('register');
+$('username').addEventListener('input', () => { $('activation-field').hidden = mode !== 'login' || $('username').value.trim().toLowerCase() !== 'root'; });
+$('open-recovery').onclick = () => { $('recovery-form').hidden = !$('recovery-form').hidden; $('recovery-error').textContent = ''; };
+$('recovery-form').onsubmit = async event => {
+  event.preventDefault(); const form = $('recovery-form'); const submit = form.querySelector('button[type="submit"]');
+  const username = $('recovery-name').value.trim().toLowerCase(); const recoveryCode = $('recovery-code').value;
+  let password = $('recovery-password').value, identity;
+  $('recovery-error').textContent = ''; submit.disabled = true;
+  try {
+    if (password !== $('recovery-repeat').value) throw Error('两次新密码不一致。');
+    validateNewPassword(password);
+    identity = await prepareEnrollment(password);
+    await api('/api/auth/recover', 'POST', { username, recoveryCode, ...identity });
+    toast('新身份已设置。请重新登录，并与联系人通过可信渠道核对新安全码。');
+    form.hidden = true; setMode('login'); $('username').value = username;
+  } catch (error) { $('recovery-error').textContent = error.message; }
+  finally { password = ''; for (const id of ['recovery-code','recovery-password','recovery-repeat']) $(id).value = ''; submit.disabled = false; }
+};
 $('auth-form').onsubmit = async (event) => {
   event.preventDefault(); if ($('auth-submit').disabled) return;
   const username = $('username').value.trim().toLowerCase(); let password = $('password').value;
-  const currentMode = mode; const invite = $('invite').value.trim(); let credentials, identity, secretKey;
+  const currentMode = mode; const activationCode = $('activation-code').value; let credentials, secretKey;
   $('auth-submit').disabled = true; $('login-tab').disabled = true; $('register-tab').disabled = true;
   $('auth-submit').textContent = '正在解锁本机密钥…'; $('auth-error').textContent = '';
   try {
-    if (currentMode === 'register' && password.length < 12) throw new Error('请使用至少 12 个字符的密码。');
-    const salt = currentMode === 'register' ? randomSalt() : (await api('/api/auth/salt?username=' + encodeURIComponent(username))).salt;
+    if (currentMode === 'register') validateNewPassword(password);
+    if (currentMode === 'register') {
+      const payload = await prepareEnrollment(password, $('request-note').value);
+      await api('/api/auth/register', 'POST', { username, ...payload });
+      $('request-note').value = ''; $('password').value = '';
+      setMode('login'); toast('申请已提交，请等待管理员审批后登录。'); return;
+    }
+    const salt = (await api('/api/auth/salt?username=' + encodeURIComponent(username))).salt;
     credentials = await deriveCredentials(password, salt); password = ''; $('password').value = '';
     let user;
-    if (currentMode === 'register') {
-      identity = createIdentity(credentials.vaultKey);
-      user = await api('/api/auth/register', 'POST', { username, invite, salt, authKey: b64(credentials.authKey), publicKey: identity.publicKey, vault: identity.vault });
-      secretKey = identity.secretKey;
-    } else {
-      user = await api('/api/auth/login', 'POST', { username, authKey: b64(credentials.authKey) });
-      secretKey = unlockIdentity(user, credentials.vaultKey);
-    }
-    self = { id: user.id, username: user.username, publicKey: user.publicKey, secretKey };
+    user = await api('/api/auth/login', 'POST', { username, authKey: b64(credentials.authKey), activationCode });
+    secretKey = unlockIdentity(user, credentials.vaultKey);
+    self = { id: user.id, username: user.username, publicKey: user.publicKey, secretKey, role: user.role, mustChangePassword: user.mustChangePassword, activationCode: user.mustChangePassword ? activationCode : '' };
     generation++; $('auth-screen').hidden = true; $('chat-screen').hidden = false;
     $('self-name').textContent = '@' + self.username;
     $('entry-kind').textContent = cloudMode ? '云端服务' : location.hostname.endsWith('.trycloudflare.com') ? '临时链接入口' : '本机入口';
-    $('invite').value = ''; selected = null; conversations = []; messages = []; signature = ''; renderConversations();
+    $('activation-code').value = ''; selected = null; conversations = []; messages = []; signature = ''; renderConversations();
     $('empty-state').hidden = false; $('conversation-panel').hidden = true;
-    await sync();
+    await accountControls.enter(self);
+    if (self.role === 'member') await sync();
   } catch (error) {
-    if (!self) wipe(identity?.secretKey); $('auth-error').textContent = error.message;
+    if (!self) wipe(secretKey); $('auth-error').textContent = error.message;
   } finally {
     password = ''; wipe(credentials?.authKey); wipe(credentials?.vaultKey);
     $('auth-submit').disabled = false; $('login-tab').disabled = false; $('register-tab').disabled = false;
-    $('auth-submit').textContent = mode === 'register' ? '创建账号并进入' : '解锁并进入';
+    $('auth-submit').textContent = mode === 'register' ? '提交申请' : '解锁并进入';
   }
 };
 function lock() {
   generation++; wipe(self?.secretKey); self = null; selected = null; conversations = []; messages = []; signature = '';
-  closeImage(); $('safety-dialog').close(); $('message-input').value = ''; $('password').value = '';
+  accountControls.clear();
+  closeImage(); $('safety-dialog').close(); $('message-input').value = ''; $('password').value = ''; $('activation-code').value = '';
   clearMessageView(); $('conversations').replaceChildren(); $('safety-code').textContent = '';
   $('chat-screen').hidden = true; $('auth-screen').hidden = false;
 }
+const accountControls = accountUI({ api, getSelf: () => self, lock, toast });
 $('logout').onclick = async () => { try { await api('/api/auth/logout', 'POST'); } catch {} finally { lock(); } };
 function renderConversations() {
   const fragment = document.createDocumentFragment();
@@ -102,8 +138,8 @@ function checkTrust() {
   blocked = Boolean(pin && pin.publicKey !== selected.peer.publicKey);
   const verified = !blocked && pin?.verified;
   $('trust-notice').className = 'trust-notice' + (blocked ? ' blocked' : verified ? ' verified' : '');
-  $('trust-notice').textContent = blocked ? '对方公钥发生变化。已阻止发送与解密，请停止使用并通过可信渠道确认身份。' : verified ? '已在此浏览器核对安全码。请仍注意终端安全和截图风险。' : '首次会话，请通过可信渠道核对双方安全码；首次自动记住公钥不等于验证身份。';
-  $('verify').textContent = verified ? '已核对安全码' : '核对安全码';
+  $('trust-notice').textContent = blocked ? '对方身份公钥发生变化。已阻止发送与解密。请通过可信外部渠道核对新的完整安全码，再明确更新本机信任记录。' : verified ? '已在此浏览器核对安全码。请仍注意终端安全和截图风险。' : '首次会话，请通过可信渠道核对双方安全码；首次自动记住公钥不等于验证身份。';
+  $('verify').textContent = blocked ? '核对新身份' : verified ? '已核对安全码' : '核对安全码';
   $('send').disabled = blocked || sending; $('image-button').disabled = blocked || sending;
 }
 async function selectConversation(c) {
@@ -136,7 +172,7 @@ async function refreshMessages() {
 async function sync(force = true) {
   if (!force && ((cloudMode && document.hidden) || Date.now() < nextPollAt)) return;
   nextPollAt = Date.now() + pollIntervalMs;
-  if (!self || syncing) return; syncing = true; const epoch = generation;
+  if (!self || self.role !== 'member' || syncing) return; syncing = true; const epoch = generation;
   try {
     const result = await api('/api/conversations'); if (!self || generation !== epoch) return;
     const listChanged = JSON.stringify(result) !== JSON.stringify(conversations); conversations = result;
@@ -212,10 +248,16 @@ $('clear-chat').onclick = async () => {
 $('verify').onclick = async () => {
   if (!self || !selected) return; const user = self, peer = selected.peer; safetyPeer = peer;
   $('safety-code').textContent = await safetyCode(user, peer); if (self !== user) return;
-  $('mark-verified').disabled = blocked; $('safety-dialog').showModal();
+  $('safety-explanation').textContent = blocked ? '对方公钥已变化。请通过当面或另一条可信渠道与对方核对下面的完整新安全码。核对一致后，才可更新本机信任记录；旧记录会保留。' : '当面或通过另一个可信渠道，与对方比较下面的完整安全码。两边必须一致。';
+  $('mark-verified').textContent = blocked ? '已独立核对新安全码，更新信任记录' : '已经与对方核对，一致';
+  $('mark-verified').disabled = false; $('safety-dialog').showModal();
 };
 $('close-safety').onclick = () => $('safety-dialog').close();
-$('mark-verified').onclick = () => { if (!self || !safetyPeer || blocked) return; savePin(safetyPeer, true); $('safety-dialog').close(); checkTrust(); };
+$('mark-verified').onclick = () => {
+  if (!self || !safetyPeer || selected?.peer.id !== safetyPeer.id || selected.peer.publicKey !== safetyPeer.publicKey) return;
+  if (blocked && !confirm('确认已通过可信外部渠道与对方核对完整的新安全码，且两边完全一致？这会更新本机公钥信任记录。')) return;
+  savePin(safetyPeer, true, blocked); $('safety-dialog').close(); checkTrust(); void refreshMessages().catch(e => toast(e.message));
+};
 async function prepareImage(file) {
   if (!['image/jpeg', 'image/png', 'image/webp', 'image/gif'].includes(file.type)) throw new Error('仅支持 JPG、PNG、WebP、GIF 图片。');
   if (file.size > 8 * 1024 * 1024) throw new Error('请选择小于 8 MB 的图片。');

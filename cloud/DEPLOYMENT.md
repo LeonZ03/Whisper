@@ -1,86 +1,60 @@
 # Whisper 云端部署与维护
 
-## 已验证的部署
+## 当前状态
 
-2026-09-24：正式域名、Workers、D1 和 GitHub 推送自动部署已贯通。
+正式入口仍为 `https://whisper.leonz03.dpdns.org`，Worker 为 `whisper`，数据库为独立的 `whisper-production`，代码推送发布流程曾在旧版本验证通过。
 
-| 项目 | 配置 |
+**账号审批与认证升级目前标记为待核实。** 在主任务记录数据库迁移、完整代码推送、线上健康检查和账号流程验收之前，不要把本次升级说成已部署或测试完成。不得从旧版历史记录推断新迁移已经应用。
+
+| 阶段 | 状态 |
 | --- | --- |
-| 正式入口 | https://whisper.leonz03.dpdns.org |
-| Worker | `whisper`，Cloudflare Workers + Static Assets |
-| 数据库 | 独立的 `whisper-production`，绑定名 `DB` |
-| GitHub | `LeonZ03/Whisper`，生产分支 `main` |
-| Node.js | `.node-version` 固定 `24.16.0` |
-| 构建命令 | `npm test && npm run build:cloud && npm run test:cloud` |
-| 部署命令 | `npm run deploy:cloud:code` |
-| 项目根目录 | 仓库根目录 `/` |
-| 预览分支部署 | 关闭，未配置独立预览数据库前不要开启 |
+| 旧版正式域名、Worker 与推送部署链路 | 既有历史记录显示已验证；不代表本次升级 |
+| 兼容过渡代码：显式会话列、关闭旧直接注册 | 待实施/待核实 |
+| 单独审核并应用版本化数据库迁移 | 待实施/待核实 |
+| 完整审批认证代码推送 | 待实施/待核实 |
+| `/api/health` 提交号与线上账号流程验收 | 待实施/待核实 |
 
-首个实测自动发布提交为 `2546866c6ad31ed1976d4e52f49d0a421e879667`，
-对应 Cloudflare Build `c63aa9a0`，用时约 1 分 22 秒。
-该次操作只执行 `git push origin main`，没有在本机手动部署。
-正式域名 `/api/health` 随后返回相同 commit 和 `environment: cloud`。
+## 发布顺序
 
-GitHub 应用沿用已安装的 Cloudflare Workers and Pages，仅在原有 BeiPiao
-之外加入 Whisper；未改为访问全部仓库，也未改动 BeiPiao 的配置和数据。
+本次账号升级必须按下列阶段推进，保证旧代码与迁移之间的兼容窗口：
 
-## 使用方式与数据边界
+1. 先发布过渡兼容代码，显式提供会话 `credential_version` 等兼容列，并关闭旧的直接注册路径。确认线上过渡版本可用。
+2. 所有者单独审核版本化迁移，再运行 `npm.cmd run db:migrate:cloud`。迁移只做向前兼容的结构变更；不得重置、删除或重建生产数据库。
+3. 推送完整账号审批代码。等待 Cloudflare Build 成功，用正式 `/api/health` 核对返回 commit 与主分支提交一致，再验收申请、审批、登录、改密、成员恢复和双人权限。
+4. 将每阶段的实际提交、迁移编号、构建结果和验收结果写回本文。尚未发生的步骤保持待核实。
 
-云端访问不需要运行 `start.cmd`；原启动器仍用于独立的本机开发环境。
-本机账号、密钥和聊天记录没有迁移；云端应重新注册、重新核对安全码。
-新的云端邀请码仅保存在所有者本机 `data/cloud-invite-code.txt` 和 Workers Secret，
-不在 Git、网页源码、构建变量或公开使用说明中。不要误用本机邀请码。
+代码回滚不能恢复旧的直接注册入口；旧路径保持禁用。回滚前须确认旧版代码可兼容已迁移结构，不能靠数据库回滚或复位恢复旧行为。代码发布与数据库迁移分别记录。
 
-CLI 安装说明：https://whisper.leonz03.dpdns.org/cli.html 。
-已安装的客户端使用 `whisper --server https://whisper.leonz03.dpdns.org`。
-自动发布会更新云端网页、API 和可下载客户端；不会强制更新已安装的 CLI，
-CLI 升级需退出后重新执行正式安装页给出的命令。
+## 所有者 root
 
-## 日常发布
-
-1. 在本机修改代码，运行相关测试，检查 `git diff` 和暂存文件清单。
-2. 正常提交并 `git push origin main`；不要强推，不要上传 data/、密钥或生成文件。
-3. 在 Cloudflare → Workers & Pages → whisper → Deployments 查看对应提交的构建结果。
-4. 等待发布成功，再比对 `/api/health` 的 `commit` 与 `git rev-parse HEAD`。
+本机和云端账号/数据库互相独立，分别建立 root。工具要求交互确认，不接受密码参数，也不读写成员明文或聊天内容：
 
 ```powershell
-Invoke-RestMethod https://whisper.leonz03.dpdns.org/api/health
+node scripts/manage-root.mjs --local
+node scripts/manage-root.mjs --cloud
 ```
 
-推送成功并不等于构建成功；构建失败时先读该次日志，不要直接重建数据库。
-自动发布命令只更新代码，不运行数据库迁移或初始化 Secret。
-`AUTH_PEPPER` 与 `INVITE_CODE` 仅保留在 Workers 运行时 Secrets。
-既有 `AUTH_PEPPER` 必须保持稳定，不能随发布重新生成，否则会破坏已有账号验证。
+首次 root 密码固定为 `0000`。工具先在仓库 `data/` 写出随机文件名的一次性激活码，再创建 root；网页首次登录输入激活码后必须立即改密。`data/` 私有且被忽略，激活码文件不得提交、转发或打包。root 恢复需明确指定目标并带 `--recover`：
 
-## 数据库、回滚与费用
+```powershell
+node scripts/manage-root.mjs --local --recover
+node scripts/manage-root.mjs --cloud --recover
+```
 
-`0001_initial.sql` 已应用。后续结构变更需所有者审核后单独运行
-`npm run db:migrate:cloud`，确认旧代码仍兼容，再发布代码。
-严禁以重置、删除或重新创建生产库来解决部署问题。
-代码回滚不等于数据库回滚。D1 Time Travel 会保留历史副本，不能承诺
-已删除密文在云厂商历史备份中立即消失；直接恢复旧库可能恢复已经查看的图片。
-数据库恢复必须单独设计防复现流程，不能把生产流量直接指向恢复出的旧数据。
+恢复会替换 root 身份、撤销旧 root 会话并产生新激活码文件。恢复 root 不会重建数据库，也不改变成员身份。
 
-本次未升级套餐或开启付费产品。免费额度有请求、CPU、D1 与构建时间限制；
-云端轮询至少间隔 5 秒，网页后台暂停。原型仅用于小范围非敏感内容，
-Native rate limits 不是全局费用上限，增加用户量前需要重新评估。
+## 日常发布与独立数据
 
-## 验证记录
+普通代码推送运行 `npm run deploy:cloud:code`，不附带 D1 迁移权限。数据库迁移经审核后由维护者单独执行 `npm.cmd run db:migrate:cloud`。不要使用会把迁移和 Worker 发布捆绑在一起的通用 `deploy:cloud` 流程，除非另有明确审查和授权。
 
-- Cloudflare 自动构建实际执行了 15 项原有测试及 2 项 Workers/D1 测试。
-- 上线前，本机 4 项浏览器测试及 1 项云端模拟运行时浏览器测试通过。
-- 正式 HTTPS 上，3 个随机命名的临时账号验证邀请注册、登录、加密消息和第三人隔离。
-- 实际 D1 上并发 4 次领取同一测试图片，仅一次取得密文，其他请求返回 410。
-- 正式 Edge 页面显示加密聊天与倒计时；页面和 CLI 客户端连接同一云端实例。
-- 在真实自动部署前保留测试消息与登录会话，部署后确认消息、账号 ID、公钥及会话仍有效。
-- 部署后重新登录，验证仍能解密原消息；部署前打开的 Edge 页面仍能继续收消息。
-- 从正式域名完整执行 PowerShell 安装命令，获得 CLI 0.4.0；测试目录独立，未改宿主用户 PATH。
+GitHub 仓库 `LeonZ03/Whisper` 的生产分支是 `main`，构建使用 `.node-version` 中固定的 Node 版本。每次发布核对 Cloudflare → Workers & Pages → whisper → Deployments 的构建状态，以及正式 HTTPS `/api/health` 的 commit。推送成功不等于构建成功，构建成功也不等于线上验收。
 
-临时验收只操作自身创建的账号、会话和消息，完成后精确清理这些记录；
-常规 tests/ 自动测试仍使用隔离的本地数据库，不访问生产数据库。
-未声称完成独立设备、独立网络的真人完整会话测试，也没有执行安全审计。
+云端不依赖本机 `start.cmd`，也不导入 `data/`。云端与本机各有独立账号、密钥、消息和 root；重新申请后须重新核对安全码。Workers Secrets 中的 `AUTH_PEPPER` 等运行时秘密不得进入源码、构建资源或客户端包；保持既有 pepper 稳定。
 
-官方资料：
-- https://developers.cloudflare.com/workers/ci-cd/builds/git-integration/
-- https://developers.cloudflare.com/workers/ci-cd/builds/configuration/
-- https://developers.cloudflare.com/d1/reference/time-travel/
+## 数据、日志与回滚边界
+
+账号拒绝/移除是软删除：禁用账号、撤销会话并封存对话，身份墓碑保留；活动消息依原到期时间清理。D1 历史功能可能保留已删除密文；恢复旧备份可能重新出现旧数据或已领取图片。不得直接对外开放恢复出的旧库。
+
+root 登录日志会保存到达应用的 root 登录尝试时间、来源 IP 和估计位置。申请说明、账号状态、审批及恢复审计由服务端处理。不要承诺匿名或不留 IP。
+
+不升级付费套餐，不为这次工作更改其他域名。Cloudflare 额度和边缘限流都不是全局费用保证。线上验收只使用唯一合成账号，并精确清理自己创建的数据；常规自动化应使用隔离临时数据库。

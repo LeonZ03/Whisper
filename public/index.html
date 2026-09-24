@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="robots" content="noindex,nofollow"><meta name="color-scheme" content="light">
-  <meta name="description" content="Whisper，邀请制双人加密聊天实验。">
+  <meta name="description" content="Whisper，申请审批制双人加密聊天实验。">
   <title>Whisper · 私人会话</title><link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/style.css"><script type="module" src="/app.js"></script>
 </head>
@@ -11,29 +11,32 @@
   <section id="auth-screen" class="auth-shell">
     <aside class="intro">
       <a class="brand brand-light" href="/" aria-label="Whisper 首页"><span class="brand-mark">w</span> whisper<span class="edition">LOCAL</span></a>
-      <div class="intro-copy"><span class="eyebrow">JUST BETWEEN US</span><h1>话，只说给<br>想说的人听。</h1><p>一个安静的双人聊天空间。<br>消息在浏览器里加密，也只在浏览器里解开。</p><div class="intro-rule"></div><div class="intro-features"><span>01 / 邀请加入</span><span>02 / 双人会话</span><span>03 / 到期清理</span></div></div>
+      <div class="intro-copy"><span class="eyebrow">JUST BETWEEN US</span><h1>话，只说给<br>想说的人听。</h1><p>一个安静的双人聊天空间。<br>消息在浏览器里加密，也只在浏览器里解开。</p><div class="intro-rule"></div><div class="intro-features"><span>01 / 申请加入</span><span>02 / 双人会话</span><span>03 / 到期清理</span></div></div>
       <p class="intro-foot">私人实验项目，不是经过审计的安全通信产品。</p>
     </aside>
     <main class="auth-main"><div class="auth-card">
       <div class="pill"><span class="dot"></span> 私人会话 · 最小实验版</div>
       <h2 id="auth-title">回到你的会话</h2><p class="subtle" id="auth-subtitle">使用用户名和密码登录，并在本机解锁密钥。</p>
-      <div class="tabs" role="tablist" aria-label="账号操作"><button id="login-tab" role="tab" aria-selected="true" class="active">登录</button><button id="register-tab" role="tab" aria-selected="false">创建账号</button></div>
+      <div class="tabs" role="tablist" aria-label="账号操作"><button id="login-tab" role="tab" aria-selected="true" class="active">登录</button><button id="register-tab" role="tab" aria-selected="false">申请账号</button></div>
       <form id="auth-form">
         <label for="username">用户名</label><input id="username" name="username" autocomplete="username" placeholder="3–24 位字母、数字或下划线" minlength="3" maxlength="24" pattern="[a-z0-9_]{3,24}" required>
-        <label for="password">密码</label><input id="password" name="password" type="password" autocomplete="current-password" placeholder="请输入密码" maxlength="128" required>
-        <div id="invite-field" hidden><label for="invite">邀请码</label><input id="invite" name="invite" autocomplete="off" placeholder="向网站所有者索取"><p class="field-help">密码至少 12 个字符。没有密码找回功能，请妥善保管。</p></div>
+        <label for="password">密码</label><input id="password" name="password" type="password" autocomplete="current-password" placeholder="请输入密码" required>
+        <div id="register-fields" hidden><label for="request-note">验证消息（可选，最多 500 字符）</label><textarea id="request-note" maxlength="500" rows="3" placeholder="向管理员说明你是谁；不要填写密码或敏感信息"></textarea><p class="field-help">验证消息可由管理员和服务器读取，不属于端到端加密聊天。</p><p class="weak-password-note">新密码为 1–12 个 Unicode 字符。短密码容易被猜中，尤其是 1 字符密码；请使用你能记住的较长随机组合。</p></div>
+        <div id="activation-field" hidden><label for="activation-code">首次激活码</label><input id="activation-code" type="password" autocomplete="off" placeholder="来自所有者本机受保护文件"><p class="field-help">root 首次登录或所有者恢复后需要一次性激活码，并立即修改初始密码。</p></div>
         <p id="auth-error" class="error" role="alert"></p><button id="auth-submit" class="primary wide" type="submit" disabled>正在准备加密组件…</button>
       </form>
+      <button id="open-recovery" type="button" class="quiet">成员忘记密码？使用管理员提供的恢复码</button>
+      <form id="recovery-form" hidden><h3>成员身份恢复</h3><p class="field-help">将创建新身份，旧聊天无法恢复。完成后请与联系人通过可信渠道重新核对安全码。</p><label for="recovery-name">用户名</label><input id="recovery-name" autocomplete="username" pattern="[a-z0-9_]{3,24}" required><label for="recovery-code">一次性恢复码</label><input id="recovery-code" type="password" autocomplete="off" required><label for="recovery-password">新密码</label><input id="recovery-password" type="password" autocomplete="new-password" required><label for="recovery-repeat">再次输入新密码</label><input id="recovery-repeat" type="password" autocomplete="new-password" required><p class="weak-password-note">新密码为 1–12 个 Unicode 字符；1 字符密码极易被猜测。</p><p id="recovery-error" class="error" role="alert"></p><button class="primary wide" type="submit">设置新密码和新身份</button></form>
       <p class="privacy-note">不需要手机号或邮箱。昵称不等于完全匿名：服务器及转发服务仍可能看到 IP、时间与通信关系。请勿发送敏感信息。</p>
     </div><footer class="auth-footer">端到端加密原型 <span>·</span> 无群聊 <span>·</span> 无广告与第三方统计</footer></main>
   </section>
   <section id="chat-screen" class="workspace" hidden>
-    <header class="app-header"><a class="brand" href="/"><span class="brand-mark">w</span> whisper</a><span class="header-caption">私人会话</span><div class="header-right"><span id="connection" class="connection">正在连接</span><span id="self-name"></span><button id="logout" class="quiet">退出</button></div></header>
-    <div class="app-body"><aside class="sidebar"><div class="sidebar-heading"><h2>会话</h2><span class="small-pill">仅双人</span></div>
+    <header class="app-header"><a class="brand" href="/"><span class="brand-mark">w</span> whisper</a><span class="header-caption">私人会话</span><div class="header-right"><span id="connection" class="connection">正在连接</span><span id="self-name"></span><button id="account-settings" class="quiet" type="button">修改密码</button><button id="logout" class="quiet">退出</button></div></header>
+    <div id="chat-body" class="app-body"><aside class="sidebar"><div class="sidebar-heading"><h2>会话</h2><span class="small-pill">仅双人</span></div>
       <form id="new-chat-form"><label class="sr-only" for="peer-name">对方用户名</label><div class="search"><span>@</span><input id="peer-name" placeholder="输入对方完整用户名" pattern="[a-z0-9_]{3,24}" required maxlength="24"><button title="开始会话" aria-label="开始会话" type="submit">＋</button></div></form>
       <p class="sidebar-hint">只有知道用户名的人，才能找到彼此。</p><nav id="conversations" aria-label="会话列表"></nav><div class="sidebar-bottom"><span class="dot"></span><span id="entry-kind">本机入口</span><p>关闭页面会锁定本机密钥。<br>重新登录可恢复未到期消息。</p></div>
     </aside>
-    <main class="chat-main"><div id="empty-state" class="empty-state"><div class="empty-icon">w</div><h2>从一句话开始</h2><p>让朋友用邀请码注册，然后在左侧<br>输入对方的用户名，开启双人会话。</p><span class="muted-tag">同一台电脑测试：使用两个浏览器或无痕窗口</span></div>
+    <main class="chat-main"><div id="empty-state" class="empty-state"><div class="empty-icon">w</div><h2>从一句话开始</h2><p>让朋友申请账号，管理员批准后，<br>在左侧输入对方的用户名开启双人会话。</p><span class="muted-tag">同一台电脑测试：使用两个浏览器或无痕窗口</span></div>
       <section id="conversation-panel" class="conversation-panel" hidden>
         <header class="chat-header"><div class="peer-heading"><div id="peer-avatar" class="avatar"></div><div><h2 id="peer-title"></h2><p>双人加密会话</p></div></div><div class="chat-actions"><button id="verify" class="quiet">核对安全码</button><button id="clear-chat" class="quiet danger-text">双方清空</button></div></header>
         <div id="trust-notice" class="trust-notice">首次会话，请通过可信渠道核对双方安全码。</div>
@@ -42,10 +45,14 @@
         <p class="chat-footnote">删除和阅后清理无法阻止截图或另存。Enter 发送，Shift + Enter 换行。</p>
       </section>
     </main></div>
+    <section id="admin-panel" class="admin-panel" hidden><div class="admin-heading"><div><h2>账号管理</h2><p>root 仅用于审批和维护，不参与成员聊天。验证消息可读；消息正文仍为端到端密文。</p></div><button id="admin-refresh" class="quiet" type="button">刷新成员</button></div><div id="member-list" class="member-list"></div><button id="member-more" class="quiet" type="button" hidden>加载更多成员</button><div class="admin-heading"><div><h2>root 登录记录</h2><p>仅记录功能启用后到达应用并被处理的尝试。时间为中国标准时间，位置为 IP 估计。</p></div><button id="log-refresh" class="quiet" type="button">刷新记录</button></div><div class="audit-scroll"><table><thead><tr><th>时间（中国标准时间）</th><th>结果</th><th>IP</th><th>估计位置</th></tr></thead><tbody id="login-records"></tbody></table></div><button id="log-more" class="quiet" type="button" hidden>加载更多记录</button></section>
   </section>
   <input id="image-input" type="file" accept="image/png,image/jpeg,image/webp,image/gif" hidden>
   <div id="toast" role="status" hidden></div>
-  <dialog id="safety-dialog"><div class="dialog-head"><h2>核对安全码</h2><button id="close-safety" class="quiet" aria-label="关闭安全码">✕</button></div><p>当面或通过另一个可信渠道，与对方比较下面的完整安全码。两边必须一致。</p><code id="safety-code"></code><p class="field-help">“已核对”只保存在当前浏览器、当前网址。换入口后需要重新核对。</p><button id="mark-verified" class="primary wide">已经与对方核对，一致</button></dialog>
+  <dialog id="safety-dialog"><div class="dialog-head"><h2>核对安全码</h2><button id="close-safety" class="quiet" aria-label="关闭安全码">✕</button></div><p id="safety-explanation">当面或通过另一个可信渠道，与对方比较下面的完整安全码。两边必须一致。</p><code id="safety-code"></code><p class="field-help">“已核对”只保存在当前浏览器、当前网址。换入口后需要重新核对。</p><button id="mark-verified" class="primary wide">已经与对方核对，一致</button></dialog>
+  <dialog id="password-dialog"><div class="dialog-head"><h2>修改密码</h2><button id="password-close" class="quiet" type="button">关闭</button></div><p id="password-explanation"></p><form id="password-form"><label for="old-password">当前密码</label><input id="old-password" type="password" autocomplete="current-password" required><label for="new-password">新密码</label><input id="new-password" type="password" autocomplete="new-password" required><label for="repeat-password">再次输入新密码</label><input id="repeat-password" type="password" autocomplete="new-password" required><p class="weak-password-note">新密码为 1–12 个 Unicode 字符。1 字符密码容易被猜中。</p><p id="password-error" class="error" role="alert"></p><button id="password-submit" class="primary wide" type="submit">修改并重新登录</button></form></dialog>
+  <dialog id="member-action-dialog"><div class="dialog-head"><h2 id="member-action-title">确认操作</h2><button id="member-action-close" class="quiet" type="button">关闭</button></div><p id="member-action-description"></p><form id="member-action-form"><label for="member-confirm-name">输入目标用户名以确认</label><input id="member-confirm-name" autocomplete="off" required><label for="admin-password">再次输入 root 当前密码</label><input id="admin-password" type="password" autocomplete="current-password" required><p id="member-action-error" class="error" role="alert"></p><button id="member-action-submit" class="primary wide" type="submit">确认执行</button></form></dialog>
+  <dialog id="recovery-result-dialog"><div class="dialog-head"><h2>一次性成员恢复码</h2><button id="recovery-result-close" class="quiet" type="button">关闭</button></div><p>只显示这一次。请通过私下渠道交给成员；成员自行设置新密码和新身份。旧聊天无法恢复。</p><textarea id="recovery-result" rows="2" readonly></textarea></dialog>
   <dialog id="image-dialog" class="image-dialog"><div class="dialog-head"><div><h2>仅此一次</h2><p id="image-countdown">10 秒后关闭</p></div><button id="close-image" class="quiet">立即关闭</button></div><img id="view-image" alt="阅后图片"><p class="field-help">切换标签页也会关闭；无法阻止对方截图或另存。</p></dialog>
   <noscript>Whisper 需要 JavaScript 才能在浏览器中加密和解密消息。</noscript>
 </body></html>
