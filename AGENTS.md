@@ -69,3 +69,12 @@
 - Current status belongs in cloud/DEPLOYMENT.md. Never mark automatic deployment complete without an actual push and matching live commit.
 
 - Ordinary Builds deploy with `deploy:cloud:code`. Database migrations are owner-reviewed and separate; do not silently add D1 write permissions to a build token.
+
+## Verified release pipeline (2026-09-24)
+
+- The GitHub App now includes Whisper and retains BeiPiao; never replace that list with all repositories or remove unrelated entries.
+- The main-branch push `2546866` triggered Cloudflare Build `c63aa9a0`; its commit was verified at the formal HTTPS /api/health endpoint without a manual deploy.
+- Ordinary pushes now update the cloud service automatically. Keep the build command's tests and the code-only deploy command; do not append production database migrations to CI.
+- Keep README.md, CLI.md and cloud/DEPLOYMENT.md consistent about local versus cloud accounts and installation URLs.
+- Routine tests must use isolated local data. Any explicit production acceptance must use unique synthetic identities, keep credentials only in memory, and remove exactly its own records afterward.
+- Acceptance must distinguish real user records from synthetic probes. Do not claim independent-network tests or security auditing when only same-host cloud access was tested.

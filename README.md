@@ -8,10 +8,21 @@
 ## 云端部署（0.4.0）
 
 正式域名已绑定为 `https://whisper.leonz03.dpdns.org`，云端使用 Workers + Static Assets + D1。
-**当前处于上线初始化阶段：运行时 Secret 已配置，GitHub 自动构建连接与最终验收尚待完成；暂不当作已完整验收的服务。**
-Cloudflare 中已创建 Worker `whisper` 和独立空数据库 `whisper-production`，没有迁移本机账号或聊天记录。
-初始化完成后的云端服务不依赖本机开机；网页和 CLI 同时连接正式域名。原来的 `start.cmd` 仍启动独立本机环境。
+**已验证正式域名访问和 GitHub main 推送自动部署。** 2026-09-24 的首个自动发布提交为 `2546866`；部署后原测试账号、密钥和消息均保留。
+Cloudflare 中已创建 Worker `whisper` 和独立数据库 `whisper-production`，没有迁移本机账号或聊天记录。
+云端服务不依赖本机开机；网页和 CLI 同时连接正式域名。原来的 `start.cmd` 仍启动独立本机环境。
 云端和本机账号、聊天记录不自动同步，首次使用云端应重新注册并核对安全码。
+
+直接访问 [正式网页](https://whisper.leonz03.dpdns.org)；[CLI 安装页](https://whisper.leonz03.dpdns.org/cli.html) 提供当前安装／更新命令。
+云端邀请码由所有者从本机 `data/cloud-invite-code.txt` 私下提供，不同于原本本机邀请码。
+
+```powershell
+whisper --server https://whisper.leonz03.dpdns.org
+```
+
+修改代码、测试并提交后，执行 `git push origin main` 即触发自动构建。
+在 Cloudflare 的 whisper → Deployments 中确认成功，再核对 `/api/health` 返回的 commit。
+自动发布不清空数据库、不重新生成密钥；本机 `start.cmd` 不需要为了云端网站保持运行。
 
 部署步骤、运行时 Secret、自动构建设置及验收清单见 [部署手册](cloud/DEPLOYMENT.md)。
 [云端认证说明](cloud/AUTHENTICATION.md) 说明与本机认证的差异，客户端的加密协议及 60 万次密码派生没有降低。
@@ -49,7 +60,7 @@ cd Whisper
 .\start.cmd --local-only
 ```
 
-电脑关机、休眠、断网或隧道停止后，外部无法使用；每次重建隧道网址可能变化。
+仅对于上述本机＋临时隧道模式：电脑关机、休眠、断网后外部无法访问该本机实例。正式云端域名不受影响；每次重建临时隧道网址可能变化。
 不要把“隧道已连接”当成所有访问者都已能打开网页。临时隧道没有可用性保证，也不是永久云端托管。
 
 ## 使用网页

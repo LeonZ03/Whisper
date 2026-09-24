@@ -1,73 +1,86 @@
-# Cloud deployment runbook
+# Whisper 云端部署与维护
 
-## Current checkpoint (2026-09-24)
+## 已验证的部署
 
-Cloudflare Worker `whisper` was published successfully with Static Assets and the
-D1 binding `DB`. The independent database `whisper-production` has migration
-`0001_initial.sql` applied. No local accounts or messages were imported.
+2026-09-24：正式域名、Workers、D1 和 GitHub 推送自动部署已贯通。
 
-The approved production hostname is `whisper.leonz03.dpdns.org`. Its custom-domain
-binding is complete. GitHub Builds connection has NOT yet been completed or verified.
-The initial Worker endpoint is `https://whisper.2279746395.workers.dev`.
-
-Runtime authentication secrets have been initialized through official Wrangler stdin.
-The server pepper was never written to local files or terminal output. The new
-cloud invitation is in ignored data/cloud-invite-code.txt. Full live acceptance
-and push-triggered deployment verification are still pending.
-
-## Runtime secrets (owner-controlled)
-
-In Cloudflare: Workers & Pages → whisper → Settings → Variables and Secrets.
-Add both entries as **Secret**, not plaintext variables and not build variables:
-
-| Name | Required value |
+| 项目 | 配置 |
 | --- | --- |
-| `AUTH_PEPPER` | A cryptographically random 32-byte value encoded as 64 lowercase hexadecimal characters. Keep it private and stable. |
-| `INVITE_CODE` | A new, unpredictable invitation code used only for the cloud instance. Share only with intended invitees. |
+| 正式入口 | https://whisper.leonz03.dpdns.org |
+| Worker | `whisper`，Cloudflare Workers + Static Assets |
+| 数据库 | 独立的 `whisper-production`，绑定名 `DB` |
+| GitHub | `LeonZ03/Whisper`，生产分支 `main` |
+| Node.js | `.node-version` 固定 `24.16.0` |
+| 构建命令 | `npm test && npm run build:cloud && npm run test:cloud` |
+| 部署命令 | `npm run deploy:cloud:code` |
+| 项目根目录 | 仓库根目录 `/` |
+| 预览分支部署 | 关闭，未配置独立预览数据库前不要开启 |
 
-Use your password manager's random generator or a reviewed local cryptographic
-random generator. Do not reuse the documented test values or paste secrets into
-chat, Git, logs, screenshots, or `wrangler.jsonc`. Deploy the Secret changes.
+首个实测自动发布提交为 `2546866c6ad31ed1976d4e52f49d0a421e879667`，
+对应 Cloudflare Build `c63aa9a0`，用时约 1 分 22 秒。
+该次操作只执行 `git push origin main`，没有在本机手动部署。
+正式域名 `/api/health` 随后返回相同 commit 和 `environment: cloud`。
 
-## Confirmed infrastructure update
+GitHub 应用沿用已安装的 Cloudflare Workers and Pages，仅在原有 BeiPiao
+之外加入 Whisper；未改为访问全部仓库，也未改动 BeiPiao 的配置和数据。
 
-The custom domain `whisper.leonz03.dpdns.org` is now bound to the `whisper`
-Worker by Wrangler. This supersedes the domain-pending statement above.
-DNS/HTTPS reachability still needs its final external check. BeiPiao is unchanged.
+## 使用方式与数据边界
 
-## GitHub automatic builds
+云端访问不需要运行 `start.cmd`；原启动器仍用于独立的本机开发环境。
+本机账号、密钥和聊天记录没有迁移；云端应重新注册、重新核对安全码。
+新的云端邀请码仅保存在所有者本机 `data/cloud-invite-code.txt` 和 Workers Secret，
+不在 Git、网页源码、构建变量或公开使用说明中。不要误用本机邀请码。
 
-Connect the existing Worker, not a new Pages project:
-Workers & Pages → whisper → Settings → Builds → Connect.
-Select GitHub repository `LeonZ03/Whisper` and production branch `main`.
+CLI 安装说明：https://whisper.leonz03.dpdns.org/cli.html 。
+已安装的客户端使用 `whisper --server https://whisper.leonz03.dpdns.org`。
+自动发布会更新云端网页、API 和可下载客户端；不会强制更新已安装的 CLI，
+CLI 升级需退出后重新执行正式安装页给出的命令。
 
-| Setting | Value |
-| --- | --- |
-| Worker name | `whisper` (must match wrangler.jsonc) |
-| Root directory | repository root |
-| Build command | `npm test && npm run build:cloud && npm run test:cloud` |
-| Deploy command | `npm run deploy:cloud:code` |
-| Build variable | `.node-version` pins `24.16.0`; no runtime Secret is a build variable |
-| Preview/non-production builds | Disabled until separate test databases are configured |
+## 日常发布
 
-The build token needs Worker deployment permissions; ordinary builds do not need D1 write permission.
-Do not put AUTH_PEPPER or INVITE_CODE into the build environment. Runtime
-Secrets are managed separately. Never commit or copy the Wrangler OAuth token.
-Automatic deployment changes code only. The initial migration is already applied.
-Later schema changes require an owner-reviewed `npm run db:migrate:cloud` before
-the compatible code release. Never recreate the database or import local data.
+1. 在本机修改代码，运行相关测试，检查 `git diff` 和暂存文件清单。
+2. 正常提交并 `git push origin main`；不要强推，不要上传 data/、密钥或生成文件。
+3. 在 Cloudflare → Workers & Pages → whisper → Deployments 查看对应提交的构建结果。
+4. 等待发布成功，再比对 `/api/health` 的 `commit` 与 `git rev-parse HEAD`。
 
-The one-time owner setup script is scripts/initialize-cloud-secrets.mjs. It refuses
-to overwrite an existing secret. Do not run it during builds or routine deployments.
+```powershell
+Invoke-RestMethod https://whisper.leonz03.dpdns.org/api/health
+```
 
-## GitHub installation access checkpoint
+推送成功并不等于构建成功；构建失败时先读该次日志，不要直接重建数据库。
+自动发布命令只更新代码，不运行数据库迁移或初始化 Secret。
+`AUTH_PEPPER` 与 `INVITE_CODE` 仅保留在 Workers 运行时 Secrets。
+既有 `AUTH_PEPPER` 必须保持稳定，不能随发布重新生成，否则会破坏已有账号验证。
 
-On 2026-09-24, the owner completed GitHub's identity confirmation. The existing
-Cloudflare Workers and Pages GitHub App previously selected only BeiPiao.
-Whisper was added to that selected-repositories list without removing BeiPiao
-or granting access to all repositories. GitHub saved the installation change.
-Cloudflare now shows LeonZ03/Whisper without its disconnected-account warning.
-The production branch is main, and the previously recorded build/deploy commands
-were re-read from the dashboard. A real push-triggered deployment and live data
-persistence acceptance are the next checkpoint; saving the connection alone is
-not proof that an automated release succeeded.
+## 数据库、回滚与费用
+
+`0001_initial.sql` 已应用。后续结构变更需所有者审核后单独运行
+`npm run db:migrate:cloud`，确认旧代码仍兼容，再发布代码。
+严禁以重置、删除或重新创建生产库来解决部署问题。
+代码回滚不等于数据库回滚。D1 Time Travel 会保留历史副本，不能承诺
+已删除密文在云厂商历史备份中立即消失；直接恢复旧库可能恢复已经查看的图片。
+数据库恢复必须单独设计防复现流程，不能把生产流量直接指向恢复出的旧数据。
+
+本次未升级套餐或开启付费产品。免费额度有请求、CPU、D1 与构建时间限制；
+云端轮询至少间隔 5 秒，网页后台暂停。原型仅用于小范围非敏感内容，
+Native rate limits 不是全局费用上限，增加用户量前需要重新评估。
+
+## 验证记录
+
+- Cloudflare 自动构建实际执行了 15 项原有测试及 2 项 Workers/D1 测试。
+- 上线前，本机 4 项浏览器测试及 1 项云端模拟运行时浏览器测试通过。
+- 正式 HTTPS 上，3 个随机命名的临时账号验证邀请注册、登录、加密消息和第三人隔离。
+- 实际 D1 上并发 4 次领取同一测试图片，仅一次取得密文，其他请求返回 410。
+- 正式 Edge 页面显示加密聊天与倒计时；页面和 CLI 客户端连接同一云端实例。
+- 在真实自动部署前保留测试消息与登录会话，部署后确认消息、账号 ID、公钥及会话仍有效。
+- 部署后重新登录，验证仍能解密原消息；部署前打开的 Edge 页面仍能继续收消息。
+- 从正式域名完整执行 PowerShell 安装命令，获得 CLI 0.4.0；测试目录独立，未改宿主用户 PATH。
+
+临时验收只操作自身创建的账号、会话和消息，完成后精确清理这些记录；
+常规 tests/ 自动测试仍使用隔离的本地数据库，不访问生产数据库。
+未声称完成独立设备、独立网络的真人完整会话测试，也没有执行安全审计。
+
+官方资料：
+- https://developers.cloudflare.com/workers/ci-cd/builds/git-integration/
+- https://developers.cloudflare.com/workers/ci-cd/builds/configuration/
+- https://developers.cloudflare.com/d1/reference/time-travel/

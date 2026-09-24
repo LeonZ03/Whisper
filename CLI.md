@@ -88,7 +88,7 @@ npm.cmd run test:cli:install # 命令安装、重复安装、校验失败、安�
 
 自动测试使用临时数据库/安装目录；安装测试以 `-NoPath` 禁止修改宿主用户持久 PATH，但验证安装命令对当前测试窗口 PATH 的刷新。
 正常安装默认添加用户 PATH。本机测试结果可参阅未提交的 `CLI-VERIFICATION.md`，不把测试通过当成安全审计。
-Cloudflare 云端迁移仍待实现，见 `CLOUDFLARE-DEPLOYMENT-PLAN.md`；当前服务仍运行于提供者电脑。
+正式云端部署已完成，见 `cloud/DEPLOYMENT.md`。使用正式域名不依赖提供者电脑；原有本机／临时隧道模式仍然保留。
 
 参考：Microsoft Invoke-WebRequest、Get-FileHash、about_Execution_Policies；Cloudflare Quick Tunnels 官方文档。
 
@@ -165,3 +165,10 @@ https://learn.chatgpt.com/docs/developer-commands?surface=cli
 粘贴到 PowerShell 的网址必须是纯 URL，不能带 Markdown 的 `[网址](网址)` 包装；变量应为 `$_` 而非 `$\_`。优先使用安装帮助页的“复制安装命令”按钮，或直接从 `data/cli-commands.txt` 复制。安装脚本更新后旧哈希命令会失效，必须复制最新命令，不要删除哈希检查。
 
 参考：Cloudflare Tunnel common errors（https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/troubleshoot-tunnels/common-errors/）；curl --noproxy（https://curl.se/docs/manpage.html#--noproxy）。
+
+## 正式云端入口
+
+安装／更新：https://whisper.leonz03.dpdns.org/cli.html 。
+连接命令：`whisper --server https://whisper.leonz03.dpdns.org`。
+云端需使用云端邀请码重新注册；不会同步原本本机账号、密钥或消息。
+GitHub 推送更新云端服务与可下载客户端，不会静默替换已经安装的 CLI。

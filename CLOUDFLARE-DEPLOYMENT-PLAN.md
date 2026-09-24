@@ -2,14 +2,14 @@
 
 更新：2026-09-24。用户已确认正式域名 `whisper.leonz03.dpdns.org`。
 技术适配、空数据库初始化和 Worker 首次发布已完成，域名已绑定。
-**运行时 Secret 已初始化，GitHub Builds 连接与最终线上验收尚未完成，不应宣布完整上线。**
+**运行时 Secret、GitHub Builds 连接和真实推送自动发布已验证，首个验收提交为 `2546866`。**
 具体设置和后续状态见 [cloud/DEPLOYMENT.md](cloud/DEPLOYMENT.md)。
 
 ## 架构
 
 ```text
 GitHub LeonZ03/Whisper · main
-  → Cloudflare Workers Builds（连接待完成）
+  → Cloudflare Workers Builds（main 推送自动触发，已验证）
   → 测试 → 构建 → 只发布代码 → Worker + Static Assets（数据库迁移单独审核执行）
 
 正式域名 → 网页 / 同域 API / CLI 安装入口
@@ -47,10 +47,10 @@ D1 Time Travel 会保留历史密文；删除活动数据不是对云厂商备�
 ## 验收门禁
 
 1. 运行时 Secret 配置后，两个云端账号完成实际注册、登录、文字/图片、双方删除与到期验证。
-2. 正式域名 HTTPS 与 workers.dev 均返回云端实例；不能回源本机隧道。
+2. 正式域名 HTTPS 返回云端实例，不回源本机隧道。workers.dev 备用域名的网络可达性不作为正式入口可用的前提。
 3. 通过 GitHub main 的实际推送触发构建，核对部署提交与 `/api/health` 的 commit 一致。
 4. 更新部署不重置数据库；预览环境不得复用生产数据库。
-5. 继续通过原本本机、网页、终端测试；不将测试数据写入真实聊天库。
+5. 常规测试隔离；正式上线验收只使用随机命名的临时账号，完成后精确清理，不读取或修改真实用户消息。
 
 官方参考：
 - https://developers.cloudflare.com/workers/ci-cd/builds/
