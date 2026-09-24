@@ -32,7 +32,7 @@ async function api(request,env,origin) {
     const token=randomB64(32).replaceAll('+','-').replaceAll('/','_').replace(/=+$/,'');
     const old=cookieToken(request), commands=[];
     if(old) commands.push(stmt('DELETE FROM sessions WHERE token_hash=?',await digest(old)));
-    commands.push(stmt('INSERT INTO sessions VALUES(?,?,?,?)',await digest(token),userId,Date.now(),Date.now()+43200000));
+    commands.push(stmt('INSERT INTO sessions(token_hash,user_id,created_at,expires_at) VALUES(?,?,?,?)',await digest(token),userId,Date.now(),Date.now()+43200000));
     await db.batch(commands); return {'Set-Cookie':cookie(token,origin)};
   }
   if(path.startsWith('/api/auth/')) {
@@ -48,6 +48,7 @@ async function api(request,env,origin) {
       const token=cookieToken(request); if(token)await stmt('DELETE FROM sessions WHERE token_hash=?',await digest(token)).run();
       return json({ok:true},200,{'Set-Cookie':cookie('',origin,0)});
     }
+    if(path==='/api/auth/register' && method==='POST') fail(503,'账号申请升级中，请稍后再试。');
     if(method==='POST' && ['/api/auth/login','/api/auth/register'].includes(path)) {
       const {username,authKey}=body;
       if(typeof username!=='string'||!USERNAME.test(username)) fail(400,'用户名需为 3–24 位小写字母、数字或下划线。');
@@ -91,7 +92,7 @@ async function api(request,env,origin) {
       const peer=await first('SELECT * FROM users WHERE username=?',body.username);
       if(!peer || peer.id===userId)fail(404,'未找到该用户，或不能与自己聊天。');
       const [a,b]=[userId,peer.id].sort(), now=Date.now();
-      await stmt('INSERT OR IGNORE INTO conversations VALUES(?,?,?,?,?)',crypto.randomUUID(),a,b,now,now).run();
+      await stmt('INSERT OR IGNORE INTO conversations(id,a,b,created_at,updated_at) VALUES(?,?,?,?,?)',crypto.randomUUID(),a,b,now,now).run();
       const c=await first('SELECT id FROM conversations WHERE a=? AND b=?',a,b);
       return json({id:c.id,peer:publicUser(peer),updatedAt:now});
     }
