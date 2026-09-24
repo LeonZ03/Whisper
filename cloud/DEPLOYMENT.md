@@ -59,3 +59,15 @@ the compatible code release. Never recreate the database or import local data.
 
 The one-time owner setup script is scripts/initialize-cloud-secrets.mjs. It refuses
 to overwrite an existing secret. Do not run it during builds or routine deployments.
+
+## GitHub installation access checkpoint
+
+On 2026-09-24, the owner completed GitHub's identity confirmation. The existing
+Cloudflare Workers and Pages GitHub App previously selected only BeiPiao.
+Whisper was added to that selected-repositories list without removing BeiPiao
+or granting access to all repositories. GitHub saved the installation change.
+Cloudflare now shows LeonZ03/Whisper without its disconnected-account warning.
+The production branch is main, and the previously recorded build/deploy commands
+were re-read from the dashboard. A real push-triggered deployment and live data
+persistence acceptance are the next checkpoint; saving the connection alone is
+not proof that an automated release succeeded.
