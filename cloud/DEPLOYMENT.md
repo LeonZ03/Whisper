@@ -46,15 +46,16 @@ Select GitHub repository `LeonZ03/Whisper` and production branch `main`.
 | Worker name | `whisper` (must match wrangler.jsonc) |
 | Root directory | repository root |
 | Build command | `npm test && npm run build:cloud && npm run test:cloud` |
-| Deploy command | `npm run deploy:cloud` |
-| Build variable | `NODE_VERSION=24.16.0` |
+| Deploy command | `npm run deploy:cloud:code` |
+| Build variable | `.node-version` pins `24.16.0`; no runtime Secret is a build variable |
 | Preview/non-production builds | Disabled until separate test databases are configured |
 
-The build token must have Worker deployment and D1 migration permissions.
+The build token needs Worker deployment permissions; ordinary builds do not need D1 write permission.
 Do not put AUTH_PEPPER or INVITE_CODE into the build environment. Runtime
 Secrets are managed separately. Never commit or copy the Wrangler OAuth token.
-The deployment command only applies pending, versioned migrations; it does not
-recreate the database, reset accounts or import data/whisper.sqlite.
+Automatic deployment changes code only. The initial migration is already applied.
+Later schema changes require an owner-reviewed `npm run db:migrate:cloud` before
+the compatible code release. Never recreate the database or import local data.
 
 The one-time owner setup script is scripts/initialize-cloud-secrets.mjs. It refuses
 to overwrite an existing secret. Do not run it during builds or routine deployments.

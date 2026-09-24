@@ -10,7 +10,7 @@
 ```text
 GitHub LeonZ03/Whisper · main
   → Cloudflare Workers Builds（连接待完成）
-  → 测试 → 构建 → 版本化数据库迁移 → Worker + Static Assets
+  → 测试 → 构建 → 只发布代码 → Worker + Static Assets（数据库迁移单独审核执行）
 
 正式域名 → 网页 / 同域 API / CLI 安装入口
           → D1 独立数据库

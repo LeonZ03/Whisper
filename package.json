@@ -22,7 +22,9 @@
     "test:cloud": "node --test tests/cloud.test.mjs",
     "deploy:cloud": "wrangler d1 migrations apply whisper-production --remote && wrangler deploy",
     "dev:cloud": "wrangler dev",
-    "test:cloud:e2e": "playwright test --config=playwright.cloud.config.mjs"
+    "test:cloud:e2e": "playwright test --config=playwright.cloud.config.mjs",
+    "deploy:cloud:code": "wrangler deploy",
+    "db:migrate:cloud": "wrangler d1 migrations apply whisper-production --remote"
   },
   "dependencies": {
     "express": "5.2.1",

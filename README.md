@@ -142,3 +142,7 @@ D1 历史恢复可能保留删除前的密文；界面到期和活动表删除�
 未开通付费套餐；云端请求、CPU、数据库额度仍有限，不能承诺永久免费或无限使用。
 
 云端邀请码单独保存在本机 `data/cloud-invite-code.txt`，不要公开提交或把认证 pepper 发给任何人。
+
+普通自动部署只运行 `npm run deploy:cloud:code`，不会给每次代码推送附带数据库写入/迁移权限。
+数据库结构有变更时，由所有者审核后单独运行 `npm.cmd run db:migrate:cloud`，再发布兼容代码。
+云端构建的 Node.js 版本在 `.node-version` 固定为 24.16.0。

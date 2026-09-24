@@ -67,3 +67,5 @@
 - Do not upgrade a Cloudflare plan or enable a paid product without explicit permission. Native rate limits are not a global billing guarantee.
 - Record Worker deployment, domain HTTPS, runtime secrets readiness and Git-push-triggered deployment as separate verified milestones.
 - Current status belongs in cloud/DEPLOYMENT.md. Never mark automatic deployment complete without an actual push and matching live commit.
+
+- Ordinary Builds deploy with `deploy:cloud:code`. Database migrations are owner-reviewed and separate; do not silently add D1 write permissions to a build token.
