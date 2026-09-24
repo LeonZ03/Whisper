@@ -1,0 +1,33 @@
+node_modules/
+data/
+public/app.js
+public/app.js.LEGAL.txt
+playwright-report/
+test-results/
+*.log
+*.b64
+public/downloads/
+public/install.ps1
+
+# Local configuration and sensitive/runtime data
+.env
+.env.*
+!.env.example
+.dev.vars
+.dev.vars.*
+.wrangler/
+.runtime/
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*
+*.pem
+*.key
+*.p12
+*.pfx
+.DS_Store
+Thumbs.db
+
+# Machine-specific historical verification reports
+/VERIFICATION.md
+/CLI-VERIFICATION.md

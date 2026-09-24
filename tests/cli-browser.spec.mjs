@@ -1,0 +1,41 @@
+import { test, expect } from '@playwright/test';
+import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { createWhisperServer } from '../server/app.mjs';
+import { WhisperClient } from '../cli/client.mjs';
+test('CLI 与网页互通：共用账号、双向加密、安全码、双方删除、图片不误领取', async ({ browser }) => {
+  const dir = mkdtempSync(join(tmpdir(), 'whisper-cli-browser-')), app = await createWhisperServer({ dataDir: dir, port: 0 });
+  const client = new WhisperClient({ server: app.localUrl }), context = await browser.newContext(), page = await context.newPage();
+  const password = 'CLI-Web-Interop-Test-Only!2026', errors = [];
+  page.on('pageerror', (error) => errors.push(error.message)); page.on('dialog', (dialog) => dialog.accept());
+  try {
+    await client.authenticate({ username: 'terminal_user', password, invite: app.inviteCode, register: true });
+    await page.goto(app.localUrl); await expect(page.locator('#auth-submit')).toBeEnabled();
+    await page.locator('#register-tab').click(); await page.locator('#username').fill('browser_user');
+    await page.locator('#password').fill(password); await page.locator('#invite').fill(app.inviteCode);
+    await page.locator('#auth-submit').click(); await expect(page.locator('#chat-screen')).toBeVisible();
+    await client.chat('browser_user'); await page.getByRole('button', { name: '与 terminal_user 的会话' }).click({ timeout: 10000 });
+    const text = '这条文字由 CLI 在本机加密，网页解密显示。';
+    await client.send(text); await expect(page.locator('.bubble').filter({ hasText: text })).toBeVisible({ timeout: 10000 });
+    await page.locator('#message-input').fill('网页回复终端'); await page.locator('#send').click();
+    await expect.poll(async () => { await client.sync(); return client.viewMessages().map((m) => m.text); }).toContain('网页回复终端');
+    await page.locator('#verify').click(); expect(await page.locator('#safety-code').innerText()).toBe(await client.safety()); await page.locator('#close-safety').click();
+    expect(readFileSync(join(dir, 'whisper.sqlite')).includes(Buffer.from(text))).toBe(false);
+    await page.locator('article').filter({ hasText: text }).getByRole('button', { name: '双方删除', exact: true }).click();
+    await expect.poll(async () => { await client.sync(); return client.viewMessages().map((m) => m.text); }).not.toContain(text);
+    const reply = client.viewMessages().find((m) => m.text === '网页回复终端'); await client.remove(reply.id);
+    await expect(page.locator('article')).toHaveCount(0, { timeout: 10000 });
+    const png = await page.evaluate(() => { const canvas = document.createElement('canvas'); canvas.width = 8; canvas.height = 8; return canvas.toDataURL('image/png').split(',')[1]; });
+    await page.locator('#image-input').setInputFiles({ name: 'sample.png', mimeType: 'image/png', buffer: Buffer.from(png, 'base64') });
+    await expect.poll(async () => { await client.sync(); return client.viewMessages().at(-1)?.text || ''; }).toContain('CLI 不领取');
+    expect(app.db.prepare("SELECT consumed_at FROM messages WHERE type='image'").get().consumed_at).toBe(null);
+    await page.locator('#logout').click(); await page.locator('#login-tab').click();
+    await page.locator('#username').fill('terminal_user'); await page.locator('#password').fill(password);
+    await page.locator('#auth-submit').click(); await expect(page.locator('#chat-screen')).toBeVisible();
+    await page.getByRole('button', { name: '与 browser_user 的会话' }).click();
+    await page.getByRole('button', { name: '打开图片', exact: true }).click();
+    await expect(page.locator('#image-dialog')).toBeVisible(); await page.locator('#close-image').click();
+    await client.sync(); expect(client.viewMessages().at(-1).text).toContain('已清理'); expect(errors).toEqual([]);
+  } finally { await client.logout().catch(() => {}); await context.close(); await app.close(); rmSync(dir, { recursive: true, force: true }); }
+});

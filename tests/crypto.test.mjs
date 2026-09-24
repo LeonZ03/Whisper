@@ -1,0 +1,25 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
+import { ready, randomSalt, deriveCredentials, createIdentity, unlockIdentity, encryptMessage, decryptMessage, safetyCode, wipe } from '../src/crypto.mjs';
+await ready;
+test('密钥封装、密码派生分离、双向加解密、第三方隔离、篡改检测、安全码一致', async () => {
+  const salt = randomSalt(); const credentials = await deriveCredentials('Test-only-long-password-203!', salt);
+  assert.notDeepEqual(credentials.authKey, credentials.vaultKey);
+  const a = { id: randomUUID(), ...createIdentity(credentials.vaultKey) };
+  const b = { id: randomUUID(), ...createIdentity(credentials.vaultKey) };
+  const c = { id: randomUUID(), ...createIdentity(credentials.vaultKey) };
+  assert.deepEqual(unlockIdentity(a, credentials.vaultKey), a.secretKey);
+  assert.throws(() => unlockIdentity(a, new Uint8Array(32)));
+  const conversationId = randomUUID();
+  const wire = { ...encryptMessage(a, b, conversationId, '只在浏览器解密 <script>alert(1)</script>'), senderId: a.id, conversationId };
+  assert.equal(decryptMessage(wire, b, a).body, '只在浏览器解密 <script>alert(1)</script>');
+  assert.equal(decryptMessage(wire, a, b).body, '只在浏览器解密 <script>alert(1)</script>');
+  assert.throws(() => decryptMessage(wire, c, a));
+  assert.throws(() => decryptMessage({ ...wire, id: randomUUID() }, b, a));
+  const damaged = Buffer.from(wire.ciphertext, 'base64'); damaged[0] ^= 1;
+  assert.throws(() => decryptMessage({ ...wire, ciphertext: damaged.toString('base64') }, b, a));
+  assert.equal(await safetyCode(a, b), await safetyCode(b, a));
+  assert.notEqual(await safetyCode(a, b), await safetyCode(a, c));
+  wipe(a.secretKey); wipe(b.secretKey); wipe(c.secretKey); wipe(credentials.authKey); wipe(credentials.vaultKey);
+});

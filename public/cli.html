@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Whisper · PowerShell 安装</title><link rel="icon" href="/favicon.svg"><link rel="stylesheet" href="/cli-install.css"></head>
+<body><main><a href="/">← 网页聊天</a><p class="eyebrow">WHISPER / TERMINAL</p>
+<h1>安装一次，之后直接 whisper。</h1>
+<p>服务由朋友的电脑提供。你在自己的 PowerShell 安装和使用 CLI，不用启动服务器，不用单独安装 Node.js、npm 或 Git。</p>
+<section><h2>1 / 首次安装或更新</h2><p>Windows x64 · 当前用户安装 · 不需要管理员权限</p>
+<p>只执行你信任的服务提供者给出的命令。它会下载并校验安装脚本和客户端、自动解压，再添加用户 PATH；不修改系统执行策略。</p>
+<p id="status">正在读取安装信息…</p><pre id="install">等待安装信息</pre><button id="copy" disabled>复制安装命令</button><span id="copy-status" role="status"></span></section>
+<section><h2>2 / 在 PowerShell 连接聊天</h2><pre id="connect"></pre>
+<p>安装成功后即可在同一窗口运行上面的命令。以后可以直接输入 <code>whisper</code> 连接安装时保存的服务地址。</p>
+<p>临时网址变化时，只需换成新地址执行 <code>whisper --server 新地址</code>，无需重新安装。</p></section>
+<section><h2>3 / 登录与使用</h2><p><code>/register</code> 邀请注册，<code>/login</code> 登录；再输入 <code>/chat 对方用户名</code>。输入文字，按 Enter 发送。</p>
+<p>账号与网页共用，图片仍在网页查看。密码在客户端提示中隐藏输入，不放进安装或连接命令。</p>
+<p>卸载命令：<code>whisper --uninstall</code>。卸载默认保留公钥核对记录，不清空聊天服务器。</p></section>
+<footer>安装包只是命令安装的内部载荷，无需手动解压。此原型未经安全审计、无前向保密，无法防截屏与终端录制。校验哈希不等于发布者签名。电脑关机或隧道停止后，服务不可用。</footer>
+</main><script type="module" src="/cli-install.mjs"></script></body></html>

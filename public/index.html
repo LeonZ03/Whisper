@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="robots" content="noindex,nofollow"><meta name="color-scheme" content="light">
+  <meta name="description" content="Whisper，邀请制双人加密聊天实验。">
+  <title>Whisper · 私人会话</title><link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/style.css"><script type="module" src="/app.js"></script>
+</head>
+<body>
+  <section id="auth-screen" class="auth-shell">
+    <aside class="intro">
+      <a class="brand brand-light" href="/" aria-label="Whisper 首页"><span class="brand-mark">w</span> whisper<span class="edition">LOCAL</span></a>
+      <div class="intro-copy"><span class="eyebrow">JUST BETWEEN US</span><h1>话，只说给<br>想说的人听。</h1><p>一个安静的双人聊天空间。<br>消息在浏览器里加密，也只在浏览器里解开。</p><div class="intro-rule"></div><div class="intro-features"><span>01 / 邀请加入</span><span>02 / 双人会话</span><span>03 / 到期清理</span></div></div>
+      <p class="intro-foot">私人实验项目，不是经过审计的安全通信产品。</p>
+    </aside>
+    <main class="auth-main"><div class="auth-card">
+      <div class="pill"><span class="dot"></span> 私人会话 · 最小实验版</div>
+      <h2 id="auth-title">回到你的会话</h2><p class="subtle" id="auth-subtitle">使用用户名和密码登录，并在本机解锁密钥。</p>
+      <div class="tabs" role="tablist" aria-label="账号操作"><button id="login-tab" role="tab" aria-selected="true" class="active">登录</button><button id="register-tab" role="tab" aria-selected="false">创建账号</button></div>
+      <form id="auth-form">
+        <label for="username">用户名</label><input id="username" name="username" autocomplete="username" placeholder="3–24 位字母、数字或下划线" minlength="3" maxlength="24" pattern="[a-z0-9_]{3,24}" required>
+        <label for="password">密码</label><input id="password" name="password" type="password" autocomplete="current-password" placeholder="请输入密码" maxlength="128" required>
+        <div id="invite-field" hidden><label for="invite">邀请码</label><input id="invite" name="invite" autocomplete="off" placeholder="向网站所有者索取"><p class="field-help">密码至少 12 个字符。没有密码找回功能，请妥善保管。</p></div>
+        <p id="auth-error" class="error" role="alert"></p><button id="auth-submit" class="primary wide" type="submit" disabled>正在准备加密组件…</button>
+      </form>
+      <p class="privacy-note">不需要手机号或邮箱。昵称不等于完全匿名：服务器及转发服务仍可能看到 IP、时间与通信关系。请勿发送敏感信息。</p>
+    </div><footer class="auth-footer">端到端加密原型 <span>·</span> 无群聊 <span>·</span> 无广告与第三方统计</footer></main>
+  </section>
+  <section id="chat-screen" class="workspace" hidden>
+    <header class="app-header"><a class="brand" href="/"><span class="brand-mark">w</span> whisper</a><span class="header-caption">私人会话</span><div class="header-right"><span id="connection" class="connection">正在连接</span><span id="self-name"></span><button id="logout" class="quiet">退出</button></div></header>
+    <div class="app-body"><aside class="sidebar"><div class="sidebar-heading"><h2>会话</h2><span class="small-pill">仅双人</span></div>
+      <form id="new-chat-form"><label class="sr-only" for="peer-name">对方用户名</label><div class="search"><span>@</span><input id="peer-name" placeholder="输入对方完整用户名" pattern="[a-z0-9_]{3,24}" required maxlength="24"><button title="开始会话" aria-label="开始会话" type="submit">＋</button></div></form>
+      <p class="sidebar-hint">只有知道用户名的人，才能找到彼此。</p><nav id="conversations" aria-label="会话列表"></nav><div class="sidebar-bottom"><span class="dot"></span><span id="entry-kind">本机入口</span><p>关闭页面会锁定本机密钥。<br>重新登录可恢复未到期消息。</p></div>
+    </aside>
+    <main class="chat-main"><div id="empty-state" class="empty-state"><div class="empty-icon">w</div><h2>从一句话开始</h2><p>让朋友用邀请码注册，然后在左侧<br>输入对方的用户名，开启双人会话。</p><span class="muted-tag">同一台电脑测试：使用两个浏览器或无痕窗口</span></div>
+      <section id="conversation-panel" class="conversation-panel" hidden>
+        <header class="chat-header"><div class="peer-heading"><div id="peer-avatar" class="avatar"></div><div><h2 id="peer-title"></h2><p>双人加密会话</p></div></div><div class="chat-actions"><button id="verify" class="quiet">核对安全码</button><button id="clear-chat" class="quiet danger-text">双方清空</button></div></header>
+        <div id="trust-notice" class="trust-notice">首次会话，请通过可信渠道核对双方安全码。</div>
+        <div id="messages" class="messages" aria-label="聊天消息" aria-live="polite"></div>
+        <form id="message-form" class="composer"><label class="sr-only" for="message-input">聊天内容</label><textarea id="message-input" placeholder="说点什么…" maxlength="4000" rows="2" required></textarea><div class="composer-bottom"><div class="composer-tools"><button id="image-button" type="button" class="quiet">▧ 阅后图片</button><label for="ttl" class="ttl-label">保留</label><select id="ttl" aria-label="消息保留时间"><option value="60000">1 分钟</option><option value="3600000">1 小时</option><option value="86400000" selected>24 小时</option><option value="604800000">7 天</option></select></div><button id="send" class="primary" type="submit">发送 ↗</button></div></form>
+        <p class="chat-footnote">删除和阅后清理无法阻止截图或另存。Enter 发送，Shift + Enter 换行。</p>
+      </section>
+    </main></div>
+  </section>
+  <input id="image-input" type="file" accept="image/png,image/jpeg,image/webp,image/gif" hidden>
+  <div id="toast" role="status" hidden></div>
+  <dialog id="safety-dialog"><div class="dialog-head"><h2>核对安全码</h2><button id="close-safety" class="quiet" aria-label="关闭安全码">✕</button></div><p>当面或通过另一个可信渠道，与对方比较下面的完整安全码。两边必须一致。</p><code id="safety-code"></code><p class="field-help">“已核对”只保存在当前浏览器、当前网址。换入口后需要重新核对。</p><button id="mark-verified" class="primary wide">已经与对方核对，一致</button></dialog>
+  <dialog id="image-dialog" class="image-dialog"><div class="dialog-head"><div><h2>仅此一次</h2><p id="image-countdown">10 秒后关闭</p></div><button id="close-image" class="quiet">立即关闭</button></div><img id="view-image" alt="阅后图片"><p class="field-help">切换标签页也会关闭；无法阻止对方截图或另存。</p></dialog>
+  <noscript>Whisper 需要 JavaScript 才能在浏览器中加密和解密消息。</noscript>
+</body></html>

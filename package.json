@@ -1,0 +1,33 @@
+{
+  "name": "whisper-local",
+  "version": "0.3.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "start": "node --no-warnings scripts/launch.mjs",
+    "start:local": "node --no-warnings scripts/launch.mjs --local-only",
+    "test": "node --test tests/crypto.test.mjs tests/server.test.mjs tests/cli.test.mjs tests/cli-history.test.mjs tests/cli-color.test.mjs tests/cli-interaction.test.mjs",
+    "test:e2e": "playwright test",
+    "cli": "node --no-warnings cli/index.mjs",
+    "test:cli": "node --test tests/cli.test.mjs tests/cli-history.test.mjs tests/cli-color.test.mjs tests/cli-interaction.test.mjs",
+    "test:cli:tty": "node --test --test-force-exit tests/cli-tty.test.mjs",
+    "build:cli": "node scripts/build-cli.mjs",
+    "test:cli:package": "node scripts/test-cli-package.mjs",
+    "test:cli:install": "node --test --test-force-exit tests/cli-install.test.mjs"
+  },
+  "dependencies": {
+    "express": "5.2.1",
+    "libsodium-wrappers": "0.8.4",
+    "string-width": "8.2.2"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.63.0",
+    "@xterm/headless": "6.0.0",
+    "esbuild": "0.28.2",
+    "node-pty": "1.1.0"
+  }
+}
