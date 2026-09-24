@@ -58,7 +58,7 @@
 - Apply only reviewed versioned migrations from cloud/migrations. Never reset, drop or recreate production tables to fix a deployment.
 - D1 image claiming uses DELETE RETURNING plus an in-statement trigger; preserve the single-winner property. No asynchronous SELECT-then-clear claim.
 - Read cloud/AUTHENTICATION.md before authentication changes. Preserve the client KDF and document the cloud HMAC/pepper tradeoff; no bare credential hashes.
-- Runtime AUTH_PEPPER and INVITE_CODE belong in Workers Secrets. Never export OAuth tokens or write runtime secrets into source, build assets or public instructions.
+- Runtime AUTH_PEPPER belongs in Workers Secrets. The old INVITE_CODE secret is unused by approval registration; never reintroduce it as an enrollment requirement. Never export OAuth tokens or write runtime secrets into source, build assets or public instructions.
 - Keep an established AUTH_PEPPER stable. Replacing it invalidates existing password-derived verifiers; rotation requires an explicit migration design.
 - Keep preview builds disabled unless their secrets and databases are isolated from production.
 - Cloud build is cross-platform and downloads a SHA-256-pinned official Windows Node runtime. Never package the host project, data or credentials.
