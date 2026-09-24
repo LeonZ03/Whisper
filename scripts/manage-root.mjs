@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, rmSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -35,6 +35,11 @@ try {
   mkdirSync(ownerDataDir, { recursive: true });
   activationFile = resolve(ownerDataDir, `${cloud ? 'cloud' : 'local'}-root-activation-${randomUUID()}.txt`);
   writeFileSync(activationFile, material.activationCode + '\n', { mode: 0o600, flag: 'wx' });
+  try { protectActivationFile(activationFile); }
+  catch {
+    try { rmSync(activationFile); activationFile = undefined; } catch { /* report the file for owner inspection below */ }
+    throw Error('Could not restrict the activation file; root was not changed. Check the prepared file before retrying.');
+  }
   if (!previous) {
     await query("INSERT INTO users(id,username,public_key,salt,vault_nonce,vault_cipher,auth_salt,auth_hash,auth_scheme,created_at,role,status,must_change) VALUES(?,'root',?,?,?,?,?,?,'root-bootstrap-hmac-v1',?,'root','active',1)", [r.id,r.publicKey,r.salt,r.vault.nonce,r.vault.ciphertext,r.authSalt,r.authHash,Date.now()]);
   } else {
@@ -54,6 +59,15 @@ function localQuery() {
   local = new DatabaseSync(resolve(ownerDataDir,'whisper.sqlite'));
   local.exec('PRAGMA foreign_keys=ON; PRAGMA busy_timeout=3000;');
   return async (sql, params) => /RETURNING|^SELECT/i.test(sql) ? local.prepare(sql).all(...params) : (local.prepare(sql).run(...params), []);
+}
+function protectActivationFile(path) {
+  if (process.platform !== 'win32') return;
+  // Node's 0600 mode does not remove inherited Windows ACL entries.
+  const identity = execFileSync('whoami.exe', ['/user', '/fo', 'csv', '/nh'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+  const sid = /,\s*"(S-[0-9-]+)"/.exec(identity)?.[1];
+  if (!sid) throw Error('Windows user SID unavailable.');
+  execFileSync('icacls.exe', [path, '/grant:r', `*${sid}:F`, '*S-1-5-18:F', '*S-1-5-32-544:F'], { stdio: 'ignore' });
+  execFileSync('icacls.exe', [path, '/inheritance:r'], { stdio: 'ignore' });
 }
 async function cloudQuery() {
   const cfg = JSON.parse(readFileSync(resolve(root,'wrangler.jsonc'),'utf8'));
