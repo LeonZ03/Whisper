@@ -1,0 +1,30 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "whisper",
+  "main": ".cloud/worker.mjs",
+  "account_id": "2209b66b760f975189ff9bf255195e6b",
+  "compatibility_date": "2026-09-24",
+  "workers_dev": true,
+  "preview_urls": false,
+  "routes": [{"pattern":"whisper.leonz03.dpdns.org","custom_domain":true}],
+  "assets": {
+    "directory": ".cloud/public", "binding": "ASSETS",
+    "run_worker_first": ["/api/*", "/downloads/whisper-cli-windows-x64.zip"]
+  },
+  "build": {"command":"npm run build:cloud"},
+  "vars": {
+    "ENVIRONMENT":"production", "INSTANCE_ID":"whisper-cloud-production-v1",
+    "ALLOWED_ORIGINS":"https://whisper.leonz03.dpdns.org,https://whisper.2279746395.workers.dev"
+  },
+  "d1_databases": [{
+    "binding":"DB", "database_name":"whisper-production",
+    "database_id":"4bc65945-ecdc-459d-b522-f18525bd8195", "migrations_dir":"cloud/migrations"
+  }],
+  "ratelimits": [
+    {"name":"API_LIMIT","namespace_id":"310100","simple":{"limit":300,"period":60}},
+    {"name":"AUTH_LIMIT","namespace_id":"310101","simple":{"limit":20,"period":60}},
+    {"name":"SEND_LIMIT","namespace_id":"310102","simple":{"limit":90,"period":60}}
+  ],
+  "triggers":{"crons":["* * * * *"]},
+  "observability":{"enabled":false}, "send_metrics":false
+}

@@ -5,6 +5,17 @@
 
 **这是未经安全审计的个人原型，不承诺完全匿名、前向保密、防截图或远程彻底擦除。请先使用非敏感内容。**
 
+## 云端部署（0.4.0）
+
+正式域名已绑定为 `https://whisper.leonz03.dpdns.org`，云端使用 Workers + Static Assets + D1。
+**当前处于上线初始化阶段：运行时 Secret 已配置，GitHub 自动构建连接与最终验收尚待完成；暂不当作已完整验收的服务。**
+Cloudflare 中已创建 Worker `whisper` 和独立空数据库 `whisper-production`，没有迁移本机账号或聊天记录。
+初始化完成后的云端服务不依赖本机开机；网页和 CLI 同时连接正式域名。原来的 `start.cmd` 仍启动独立本机环境。
+云端和本机账号、聊天记录不自动同步，首次使用云端应重新注册并核对安全码。
+
+部署步骤、运行时 Secret、自动构建设置及验收清单见 [部署手册](cloud/DEPLOYMENT.md)。
+[云端认证说明](cloud/AUTHENTICATION.md) 说明与本机认证的差异，客户端的加密协议及 60 万次密码派生没有降低。
+
 ## 能做什么
 
 - 邀请注册、登录、按完整用户名建立固定双人会话，没有群聊。
@@ -107,7 +118,7 @@ npm.cmd run test:cli:install
 | `data/` | 真实账号、密文、邀请码、运行状态；只留本机，禁止提交 |
 
 `README.md` 面向使用者；[AGENTS.md](AGENTS.md) 面向维护 AI；[CLI.md](CLI.md) 记录终端细节。
-[云端部署方案](CLOUDFLARE-DEPLOYMENT-PLAN.md) 仍待实现。**同步代码到 GitHub 不等于已经部署到 Cloudflare Workers/Pages，也不会同步聊天数据库。**
+[云端部署方案](CLOUDFLARE-DEPLOYMENT-PLAN.md) 与 [实际部署手册](cloud/DEPLOYMENT.md) 记录当前进度。**Git 推送成功、云端构建成功和线上验收通过是不同的状态；代码推送不会同步聊天数据库。**
 生成的网页 bundle、CLI ZIP、依赖、测试报告、日志和秘密配置不入 Git；新克隆通过构建重建。
 
 ## 安全与使用边界
@@ -117,3 +128,17 @@ npm.cmd run test:cli:install
 服务器或发布代码被篡改、终端被控制、恶意扩展、录屏或截图都可能泄露内容。删除动画只是界面反馈，不代表物理擦除。
 服务端与转发商仍可能看到 IP、时间、大小和通信关系等元数据。昵称不等于匿名网络。
 本项目未完成公开运营所需的合规流程；小范围、免费和使用加密不自动免除适用义务。尚未为原创代码指定开源许可证。
+
+## 云端维护命令
+
+```powershell
+npm.cmd run build:cloud    # 构建云端网页、Worker、可跨平台生成的 Windows CLI 载荷
+npm.cmd run test:cloud     # 真正的 workerd/D1 隔离测试，不连接生产库
+npm.cmd run deploy:cloud   # 有授权时应用未执行的 D1 迁移并发布；不会清空数据库
+```
+
+D1 历史恢复可能保留删除前的密文；界面到期和活动表删除不等于历史备份立即消失。
+恢复数据库前必须暂停公开访问并处理被恢复的已删除/已领取内容，不能直接把旧备份重新上线。
+未开通付费套餐；云端请求、CPU、数据库额度仍有限，不能承诺永久免费或无限使用。
+
+云端邀请码单独保存在本机 `data/cloud-invite-code.txt`，不要公开提交或把认证 pepper 发给任何人。

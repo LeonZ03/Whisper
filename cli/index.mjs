@@ -21,7 +21,7 @@ try {
   if (Number(process.versions.node.split('.')[0]) < 24) throw new Error('需要 Node.js 24 或更新版本。');
   const config = options(process.argv.slice(2));
   if (config.help) console.log('Whisper CLI · 交互式双人聊天\n\nPowerShell: .\\whisper.cmd [--server HTTPS地址]\n或: npm.cmd run cli -- [--server HTTPS地址]\n\n服务提供者运行 start.cmd；朋友安装后使用 whisper --server HTTPS地址。源码入口默认连接 http://127.0.0.1:8787。\n进入后 /login 或 /register，/chat 用户名，然后输入文字并按 Enter。\n/help 查看命令；/quit 退出。默认自动启用颜色；--no-color 或 NO_COLOR 关闭配色，--color 强制启用。只接受交互终端，不支持密码参数或重定向。');
-  else if (config.version) console.log('Whisper CLI 0.3.0');
+  else if (config.version) console.log('Whisper CLI 0.4.0');
   else {
     const root = fileURLToPath(new URL('../', import.meta.url));
     const client = new WhisperClient({ server: config.server, pinPath: resolve(process.env.WHISPER_CLI_DATA_DIR || resolve(root, 'data'), 'cli-pins.json') });

@@ -31,3 +31,7 @@ Thumbs.db
 # Machine-specific historical verification reports
 /VERIFICATION.md
 /CLI-VERIFICATION.md
+
+# Generated cloud assets and isolated cloud tests
+.cloud/
+.cloud-test/

@@ -131,7 +131,7 @@ export class ChatApplication {
   }
   async synchronize() {
     try {
-      await this.client.sync(); this.failures = 0; this.nextPoll = Date.now() + 2000;
+      await this.client.sync(); this.failures = 0; this.nextPoll = Date.now() + (this.client.pollIntervalMs || 2000);
       if (this.notice.startsWith('连接中断')) this.notify('已重新连接。', 'success');
     } catch (error) {
       this.client.messages = []; this.client.historyComplete = false; this.client.hasOlder = false; this.client.connected = false; this.failures++;
@@ -230,7 +230,7 @@ export class ChatApplication {
       }
     } catch (error) {
       if (!this.closed) { this.notify(error.message, error.name === 'AbortError' ? 'muted' : 'error'); if (error.name === 'AbortError' || !this.client.user) { this.overlay = null; this.overlayKind = null; } }
-    } finally { line = ''; this.busy = false; this.ui.busy = false; this.nextPoll = Date.now() + 2000; this.render(); }
+    } finally { line = ''; this.busy = false; this.ui.busy = false; this.nextPoll = Date.now() + (this.client.pollIntervalMs || 2000); this.render(); }
   }
   async close() {
     if (this.closed) return; this.closed = true; clearInterval(this.interval); this.chatCache = null; this.transcript.clear(); this.ui.stop();

@@ -45,7 +45,25 @@
 - Clear the message content before animating the empty shell. Respect reduced motion; cancel timers and effects on conversation changes, logout, and disconnection.
 - Keep the ten-second view-once image flow separate from the message retention countdown. Viewing a consumed image must not become possible again.
 - Browser regression: `npm.cmd run build` then `npm.cmd run test:e2e`. `tests/web-lifecycle.spec.mjs` uses an isolated browser fixture and controlled time.
-- Human-facing setup and important commands belong in README.md. AI constraints belong here. Keep CLI.md for detailed terminal behavior and the cloud deployment plan marked pending.
+- Human-facing setup and important commands belong in README.md. AI constraints belong here. Keep CLI.md for detailed terminal behavior and cloud/DEPLOYMENT.md as the factual deployment checkpoint.
 - Git remote: `git@github.com:LeonZ03/Whisper.git`; branch: `main`. Inspect the staged file list before a commit. Use ordinary fast-forward pushes; verify local and remote commit IDs afterward.
 - Generated assets, local runtime directories, logs, and machine-specific verification reports stay outside Git. A fresh clone must rebuild from the committed source and lockfile.
-- Report Git synchronization and cloud deployment separately. Pushing this repository does not start or migrate the chat service.
+- Report Git synchronization and cloud deployment separately. Only a configured and verified Builds integration makes a push deploy code; it never migrates local chat data.
+
+## Cloud deployment and operations
+
+- The owner approved `whisper.leonz03.dpdns.org`. Do not touch BeiPiao, the root hostname or other subdomains.
+- Cloud entry is `cloud/worker.mjs`; local entry remains `server/app.mjs`. Do not run the local launcher inside Workers.
+- Cloud data is independent. Never import data/ or regenerate existing users' identity keys during a deployment.
+- Apply only reviewed versioned migrations from cloud/migrations. Never reset, drop or recreate production tables to fix a deployment.
+- D1 image claiming uses DELETE RETURNING plus an in-statement trigger; preserve the single-winner property. No asynchronous SELECT-then-clear claim.
+- Read cloud/AUTHENTICATION.md before authentication changes. Preserve the client KDF and document the cloud HMAC/pepper tradeoff; no bare credential hashes.
+- Runtime AUTH_PEPPER and INVITE_CODE belong in Workers Secrets. Never export OAuth tokens or write runtime secrets into source, build assets or public instructions.
+- Keep an established AUTH_PEPPER stable. Replacing it invalidates existing password-derived verifiers; rotation requires an explicit migration design.
+- Keep preview builds disabled unless their secrets and databases are isolated from production.
+- Cloud build is cross-platform and downloads a SHA-256-pinned official Windows Node runtime. Never package the host project, data or credentials.
+- CLI release ZIP exceeds one Static Assets file: build hash-named chunks and stream them at the original ZIP path. Verify the reconstructed ZIP hash.
+- Run build:cloud, test:cloud, npm test, build and test:e2e. Production validation must not publish test credentials or disturb real accounts.
+- Do not upgrade a Cloudflare plan or enable a paid product without explicit permission. Native rate limits are not a global billing guarantee.
+- Record Worker deployment, domain HTTPS, runtime secrets readiness and Git-push-triggered deployment as separate verified milestones.
+- Current status belongs in cloud/DEPLOYMENT.md. Never mark automatic deployment complete without an actual push and matching live commit.

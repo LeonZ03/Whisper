@@ -1,6 +1,6 @@
 {
   "name": "whisper-local",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "type": "module",
   "engines": {
@@ -17,7 +17,12 @@
     "test:cli:tty": "node --test --test-force-exit tests/cli-tty.test.mjs",
     "build:cli": "node scripts/build-cli.mjs",
     "test:cli:package": "node scripts/test-cli-package.mjs",
-    "test:cli:install": "node --test --test-force-exit tests/cli-install.test.mjs"
+    "test:cli:install": "node --test --test-force-exit tests/cli-install.test.mjs",
+    "build:cloud": "node scripts/build-cloud.mjs",
+    "test:cloud": "node --test tests/cloud.test.mjs",
+    "deploy:cloud": "wrangler d1 migrations apply whisper-production --remote && wrangler deploy",
+    "dev:cloud": "wrangler dev",
+    "test:cloud:e2e": "playwright test --config=playwright.cloud.config.mjs"
   },
   "dependencies": {
     "express": "5.2.1",
@@ -28,6 +33,9 @@
     "@playwright/test": "1.63.0",
     "@xterm/headless": "6.0.0",
     "esbuild": "0.28.2",
-    "node-pty": "1.1.0"
+    "fflate": "0.8.2",
+    "miniflare": "5.20260921.0-alpha",
+    "node-pty": "1.1.0",
+    "wrangler": "4.137.0"
   }
 }

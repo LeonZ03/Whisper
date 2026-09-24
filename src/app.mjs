@@ -4,6 +4,7 @@ const $ = (id) => document.getElementById(id);
 let self = null, selected = null, conversations = [], messages = [], mode = 'login';
 let syncing = false, generation = 0, toastTimer, signature = '', imageTimer, imageUrl, viewingId, safetyPeer;
 let blocked = false, sending = false;
+let cloudMode = false, pollIntervalMs = 1500, nextPollAt = 0;
 const messageCards = new Map();
 const lifecycle = new MessageLifecycle($('messages'), (id) => {
   messageCards.delete(id); messages = messages.filter((m) => m.id !== id);
@@ -64,7 +65,7 @@ $('auth-form').onsubmit = async (event) => {
     self = { id: user.id, username: user.username, publicKey: user.publicKey, secretKey };
     generation++; $('auth-screen').hidden = true; $('chat-screen').hidden = false;
     $('self-name').textContent = '@' + self.username;
-    $('entry-kind').textContent = location.hostname.endsWith('.trycloudflare.com') ? '临时链接入口' : '本机入口';
+    $('entry-kind').textContent = cloudMode ? '云端服务' : location.hostname.endsWith('.trycloudflare.com') ? '临时链接入口' : '本机入口';
     $('invite').value = ''; selected = null; conversations = []; messages = []; signature = ''; renderConversations();
     $('empty-state').hidden = false; $('conversation-panel').hidden = true;
     await sync();
@@ -132,7 +133,9 @@ async function refreshMessages() {
   if (sig !== signature) { signature = sig; renderMessages(); }
   connection(true);
 }
-async function sync() {
+async function sync(force = true) {
+  if (!force && ((cloudMode && document.hidden) || Date.now() < nextPollAt)) return;
+  nextPollAt = Date.now() + pollIntervalMs;
   if (!self || syncing) return; syncing = true; const epoch = generation;
   try {
     const result = await api('/api/conversations'); if (!self || generation !== epoch) return;
@@ -269,8 +272,10 @@ window.addEventListener('focus', () => lifecycle.tick({ animate: false }));
 window.addEventListener('offline', () => { connection(false); closeImage(); clearMessageView(); signature = ''; });
 window.addEventListener('online', sync);
 window.addEventListener('pagehide', lock);
-setInterval(sync, 1500);
+setInterval(() => sync(false), 500);
 try {
   if (!window.isSecureContext || !crypto.subtle) throw new Error('请使用 http://127.0.0.1 本机地址或 HTTPS 临时网址。');
-  await ready; $('auth-submit').disabled = false; setMode('login');
+  await ready; const health = await api('/api/health'); cloudMode = health.environment === 'cloud';
+  if (cloudMode) pollIntervalMs = Math.max(5000, Number(health.pollIntervalMs) || 5000);
+  $('auth-submit').disabled = false; setMode('login');
 } catch (error) { $('auth-error').textContent = '加密组件无法启动：' + error.message; $('auth-submit').textContent = '无法启动'; }

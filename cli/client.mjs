@@ -52,7 +52,7 @@ export class WhisperClient {
     this.server = normalizeServer(server); this.pins = new PinStore(pinPath);
     this.fetchImpl = fetchImpl; this.timeoutMs = timeoutMs; this.cookie = '';
     this.user = null; this.selected = null; this.conversations = []; this.messages = [];
-    this.ttl = '24h'; this.connected = false; this.supportsHistory = false; this.hasOlder = false; this.historyComplete = false;
+    this.pollIntervalMs = 2000; this.ttl = '24h'; this.connected = false; this.supportsHistory = false; this.hasOlder = false; this.historyComplete = false;
   }
   async request(path, method = 'GET', body, timeoutMs = this.timeoutMs) {
     if (!path.startsWith('/api/')) throw new Error('无效的 API 路径。');
@@ -78,6 +78,7 @@ export class WhisperClient {
     const result = await this.request('/api/health');
     if (result.app !== 'Whisper' || result.ok !== true) throw new Error('这个地址不是兼容的 Whisper 服务。');
     this.supportsHistory = result.capabilities?.includes('message-history-v1') === true;
+    this.pollIntervalMs = result.environment === 'cloud' ? Math.max(5000, Number(result.pollIntervalMs) || 5000) : 2000;
     return result;
   }
   async authenticate({ username, password, invite, register = false }) {
