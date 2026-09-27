@@ -33,3 +33,4 @@
 .audit-scroll th,.audit-scroll td{padding:12px 14px;border-bottom:1px solid var(--line);vertical-align:top}.audit-scroll td{overflow-wrap:anywhere}
 #log-more{margin-top:12px}#password-dialog p,#member-action-dialog p,#recovery-result-dialog p{font-size:12px;line-height:1.8;color:#718276}
 @media(max-width:600px){.admin-panel{padding:18px 14px}.admin-heading{align-items:flex-start;gap:8px}.member-card{padding:13px;gap:8px;align-items:flex-start;flex-direction:column}.member-actions{align-self:flex-end}.header-right{gap:6px}#account-settings{font-size:10px}}
+.sending-preview .bubble{opacity:.78}.sending-preview .message-meta{color:#687d70}

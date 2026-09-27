@@ -35,8 +35,18 @@ test('两个浏览器真实加密聊天、图片、删除、越权及跨入口�
     await b.getByRole('button', { name: '与 alice_demo 的会话' }).click({ timeout: 10000 });
     await expect(b.locator('#peer-title')).toHaveText('alice_demo');
     const text = '你好，这是仅在浏览器解开的测试消息。 <img src=x onerror=alert(1)>';
-    await a.locator('#message-input').fill(text); await a.locator('#send').click();
+    let releaseSend;
+    const sendGate = new Promise(resolve => { releaseSend = resolve; });
+    const delayedSend = async route => { if (route.request().method() === 'POST') await sendGate; await route.continue(); };
+    await a.route('**/api/conversations/*/messages', delayedSend);
+    const sent = a.waitForResponse(response => response.request().method() === 'POST' && response.url().includes('/api/conversations/'));
+    try {
+      await a.locator('#message-input').fill(text); await a.locator('#send').click();
+      await expect(a.locator('.sending-preview .bubble')).toHaveText(text, { timeout: 1000 });
+      await expect(a.locator('.sending-preview [role="status"]')).toHaveText('发送中…');
+    } finally { releaseSend(); await sent; await a.unroute('**/api/conversations/*/messages', delayedSend); }
     await expect(b.locator('.bubble').filter({ hasText: text })).toBeVisible({ timeout: 10000 });
+    await expect(a.locator('.sending-preview')).toHaveCount(0, { timeout: 10000 });
     expect(await b.locator('.bubble img').count()).toBe(0);
     await expect(a.locator('.message-countdown').first()).toContainText('剩余');
     await expect(b.locator('.message-countdown').first()).toContainText('剩余');
@@ -58,6 +68,26 @@ test('两个浏览器真实加密聊天、图片、删除、越权及跨入口�
     await b.locator('#close-image').click(); await expect(b.locator('#image-dialog')).not.toBeVisible();
     await expect(b.getByRole('button', { name: '打开图片', exact: true })).toHaveCount(0);
     expect(app.db.prepare("SELECT ciphertext FROM messages WHERE type='image'").get().ciphertext).toBe(null);
+    const oversizedPng = await a.evaluate(() => {
+      const canvas = document.createElement('canvas'); canvas.width = 2200; canvas.height = 1600;
+      const context = canvas.getContext('2d'), pixels = context.createImageData(canvas.width, canvas.height);
+      let seed = 123456789;
+      for (let i = 0; i < pixels.data.length; i += 4) {
+        seed ^= seed << 13; seed ^= seed >>> 17; seed ^= seed << 5;
+        pixels.data[i] = seed & 255; pixels.data[i + 1] = (seed >>> 8) & 255;
+        pixels.data[i + 2] = (seed >>> 16) & 255; pixels.data[i + 3] = 255;
+      }
+      context.putImageData(pixels, 0, 0);
+      return canvas.toDataURL('image/png').split(',')[1];
+    });
+    const oversizedBytes = Buffer.from(oversizedPng, 'base64');
+    expect(oversizedBytes.length).toBeGreaterThan(8 * 1024 * 1024);
+    expect(oversizedBytes.length).toBeLessThan(20 * 1024 * 1024);
+    await a.locator('#image-input').setInputFiles({ name: 'large.png', mimeType: 'image/png', buffer: oversizedBytes });
+    await expect(b.getByRole('button', { name: '打开图片', exact: true })).toBeVisible({ timeout: 20000 });
+    expect(app.db.prepare("SELECT length(ciphertext) AS size FROM messages WHERE type='image' AND ciphertext IS NOT NULL").get().size).toBeLessThan(2_000_000);
+    await a.locator('#image-input').setInputFiles({ name: 'too-large.png', mimeType: 'image/png', buffer: Buffer.alloc(20 * 1024 * 1024 + 1) });
+    await expect(a.locator('#toast')).toContainText('20 MB');
     const alternative = app.localUrl.replace('127.0.0.1', 'localhost'); await d.goto(alternative);
     await expect(d.locator('#auth-submit')).toBeEnabled(); await d.locator('#username').fill('alice_demo'); await d.locator('#password').fill(password); await d.locator('#auth-submit').click();
     await expect(d.locator('#chat-screen')).toBeVisible({ timeout: 30000 }); await d.getByRole('button', { name: '与 bobby_demo 的会话' }).click();

@@ -87,7 +87,7 @@ export class WhisperClient {
     const result = await this.request('/api/health');
     if (result.app !== 'Whisper' || result.ok !== true) throw new Error('这个地址不是兼容的 Whisper 服务。');
     this.supportsHistory = result.capabilities?.includes('message-history-v1') === true;
-    this.pollIntervalMs = result.environment === 'cloud' ? Math.max(5000, Number(result.pollIntervalMs) || 5000) : 2000;
+    this.pollIntervalMs = result.environment === 'cloud' ? Math.max(2000, Number(result.pollIntervalMs) || 2000) : 2000;
     return result;
   }
   async authenticate({ username, password, register = false, applicationMessage = '' }) {

@@ -18,7 +18,7 @@ async function api(request,env,origin) {
   if (!env.DB || !/^[a-f0-9]{64}$/.test(env.AUTH_PEPPER||'')) fail(503,'云端服务尚未配置完成。');
   const url=new URL(request.url), path=url.pathname, method=request.method;
   if (path==='/api/health' && method==='GET') return json({ok:true,app:'Whisper',version:__APP_VERSION__,
-    instance:env.INSTANCE_ID,environment:'cloud',commit:__COMMIT__,pollIntervalMs:5000,
+    instance:env.INSTANCE_ID,environment:'cloud',commit:__COMMIT__,pollIntervalMs:2000,
     registration:'approval',passwordPolicy:{min:1,max:12},capabilities:['message-history-v1','cloud-d1-v1','accounts-v2']});
   const ip=request.headers.get('CF-Connecting-IP')||'local';
   await limit(env.API_LIMIT,await digest('api:'+ip),env);

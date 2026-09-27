@@ -13,7 +13,9 @@ test('cloud Worker: real browser and CLI share encrypted messages and countdowns
   try {
     await bob.authenticate({username:'cloud_bobby',password,register:true}); await app.approve('cloud_bobby');
     await bob.authenticate({username:'cloud_bobby',password});
+    expect(bob.pollIntervalMs).toBe(2000);
     await page.goto(app.url);await expect(page.locator('#auth-submit')).toBeEnabled();
+    expect(await page.evaluate(async () => (await (await fetch('/api/health')).json()).pollIntervalMs)).toBe(2000);
     await page.locator('#register-tab').click();await page.locator('#username').fill('cloud_alice');
     await page.locator('#password').fill(password);
     await page.locator('#auth-submit').click();await expect(page.locator('#toast')).toContainText('等待管理员审批');

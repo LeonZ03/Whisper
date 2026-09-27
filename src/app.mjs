@@ -8,11 +8,12 @@ let syncing = false, generation = 0, toastTimer, signature = '', imageTimer, ima
 let blocked = false, sending = false;
 let cloudMode = false, pollIntervalMs = 1500, nextPollAt = 0;
 const messageCards = new Map();
+const sendPreviews = new Map();
 const lifecycle = new MessageLifecycle($('messages'), (id) => {
   messageCards.delete(id); messages = messages.filter((m) => m.id !== id);
   if (viewingId === id) closeImage();
 });
-function clearMessageView() { lifecycle.clear(); messageCards.clear(); messages = []; signature = ''; }
+function clearMessageView() { lifecycle.clear(); messageCards.clear(); for (const preview of sendPreviews.values()) clearTimeout(preview.timer); sendPreviews.clear(); messages = []; signature = ''; }
 const pins = () => {
   try {
     const key = `whisper:public-key-pins:${self.id}:${self.publicKey}`;
@@ -35,6 +36,20 @@ function savePin(peer, verified = false, replaceAfterVerification = false) {
   catch { toast('浏览器禁止本地存储，安全码核对状态无法保存。'); }
 }
 function toast(text) { $('toast').textContent = text; $('toast').hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => $('toast').hidden = true, 4500); }
+function showSendPreview(id, text, expiresAt) {
+  const box = $('messages'), atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 140;
+  box.querySelector('.messages-empty')?.remove();
+  const article = document.createElement('article'); article.className = 'message own sending-preview';
+  const bubble = document.createElement('div'); bubble.className = 'bubble'; bubble.textContent = text;
+  const status = document.createElement('small'); status.className = 'message-meta'; status.setAttribute('role', 'status'); status.textContent = '发送中…';
+  article.append(bubble, status); box.append(article); if (atBottom) box.scrollTop = box.scrollHeight;
+  const timer = setTimeout(() => removeSendPreview(id), Math.max(0, expiresAt - Date.now()));
+  sendPreviews.set(id, { article, status, timer });
+}
+function removeSendPreview(id) {
+  const preview = sendPreviews.get(id); if (!preview) return;
+  clearTimeout(preview.timer); preview.article.replaceChildren(); preview.article.remove(); sendPreviews.delete(id);
+}
 async function api(path, method = 'GET', body) {
   let response;
   try {
@@ -158,11 +173,12 @@ $('new-chat-form').onsubmit = async (event) => {
   } catch (error) { toast(error.message); } finally { if (button) button.disabled = false; }
 };
 function connection(ok) { $('connection').textContent = ok ? '● 已连接' : '● 连接中断'; $('connection').classList.toggle('offline', !ok); }
-async function refreshMessages() {
+async function refreshMessages(prefetched) {
   if (!self || !selected) return;
   const current = selected.id, epoch = generation;
-  const result = await api(`/api/conversations/${current}/messages`);
+  const result = prefetched ?? await api(`/api/conversations/${current}/messages`);
   if (!self || generation !== epoch || selected?.id !== current) return;
+  for (const item of result) removeSendPreview(item.id);
   messages = result;
   if (viewingId && !messages.some((m) => m.id === viewingId)) closeImage();
   const sig = JSON.stringify(result.map((m) => [m.id, m.consumedAt, m.ciphertext, m.nonce, m.expiresAt]));
@@ -174,13 +190,17 @@ async function sync(force = true) {
   nextPollAt = Date.now() + pollIntervalMs;
   if (!self || self.role !== 'member' || syncing) return; syncing = true; const epoch = generation;
   try {
-    const result = await api('/api/conversations'); if (!self || generation !== epoch) return;
+    const [result, recentMessages] = await Promise.all([
+      api('/api/conversations'),
+      selected ? api(`/api/conversations/${selected.id}/messages`) : Promise.resolve(null)
+    ]);
+    if (!self || generation !== epoch) return;
     const listChanged = JSON.stringify(result) !== JSON.stringify(conversations); conversations = result;
     if (selected) {
       const updated = conversations.find((c) => c.id === selected.id);
       if (updated) { const keyChanged = updated.peer.publicKey !== selected.peer.publicKey; selected = updated; checkTrust(); if (keyChanged) signature = ''; }
     }
-    if (listChanged) renderConversations(); await refreshMessages(); connection(true);
+    if (listChanged) renderConversations(); await refreshMessages(recentMessages); connection(true);
   } catch (error) {
     if (!self || epoch !== generation) return;
     connection(false); clearMessageView(); signature = ''; closeImage();
@@ -193,7 +213,7 @@ function renderMessages() {
   messages = messages.filter((m) => m.expiresAt > Date.now());
   lifecycle.reconcile(new Set(messages.map((m) => m.id)), messages.length >= 200 ? messages[0].seq : 0);
   if (messages.length) box.querySelector('.messages-empty')?.remove();
-  if (!messages.length) lifecycle.emptyState();
+  if (!messages.length && !sendPreviews.size) lifecycle.emptyState();
   for (const m of messages) {
     const key = JSON.stringify([m.ciphertext, m.nonce, m.expiresAt, m.consumedAt, blocked]);
     const previous = messageCards.get(m.id);
@@ -232,11 +252,20 @@ $('message-form').onsubmit = async (event) => {
   event.preventDefault(); if (!self || !selected || blocked || sending) return;
   const text = $('message-input').value.trim(); if (!text) return;
   sending = true; checkTrust(); const c = selected;
+  let message;
   try {
-    const message = encryptMessage(self, c.peer, c.id, text, { ttlMs: Number($('ttl').value) });
+    message = encryptMessage(self, c.peer, c.id, text, { ttlMs: Number($('ttl').value) });
+    showSendPreview(message.id, text, message.expiresAt);
     await api(`/api/conversations/${c.id}/messages`, 'POST', message);
-    if (selected?.id === c.id) { $('message-input').value = ''; await refreshMessages(); $('messages').scrollTop = $('messages').scrollHeight; }
-  } catch (error) { toast(error.message); } finally { sending = false; checkTrust(); }
+    if (selected?.id === c.id && self) {
+      if ($('message-input').value.trim() === text) $('message-input').value = '';
+      const preview = sendPreviews.get(message.id); if (preview) preview.status.textContent = '已发送，正在同步';
+      void refreshMessages().catch(() => {
+        const waiting = sendPreviews.get(message.id); if (waiting) waiting.status.textContent = '已发送，等待连接恢复';
+      });
+    }
+  } catch (error) { if (message) removeSendPreview(message.id); toast(error.message); }
+  finally { sending = false; checkTrust(); }
 };
 $('message-input').onkeydown = (event) => { if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); $('message-form').requestSubmit(); } };
 $('clear-chat').onclick = async () => {
@@ -260,16 +289,22 @@ $('mark-verified').onclick = () => {
 };
 async function prepareImage(file) {
   if (!['image/jpeg', 'image/png', 'image/webp', 'image/gif'].includes(file.type)) throw new Error('仅支持 JPG、PNG、WebP、GIF 图片。');
-  if (file.size > 8 * 1024 * 1024) throw new Error('请选择小于 8 MB 的图片。');
+  if (file.size > 20 * 1024 * 1024) throw new Error('请选择小于 20 MB 的图片。');
   const bitmap = await createImageBitmap(file);
   try {
     if (bitmap.width * bitmap.height > 40_000_000) throw new Error('图片分辨率过大。');
-    const scale = Math.min(1, 1600 / Math.max(bitmap.width, bitmap.height)); const canvas = document.createElement('canvas');
-    canvas.width = Math.max(1, Math.round(bitmap.width * scale)); canvas.height = Math.max(1, Math.round(bitmap.height * scale));
-    canvas.getContext('2d').drawImage(bitmap, 0, 0, canvas.width, canvas.height);
-    const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/webp', 0.82)); canvas.width = canvas.height = 0;
-    if (!blob || blob.size > 1_000_000) throw new Error('处理后的图片超过 1 MB，请选择更小的图片。');
-    return { bytes: new Uint8Array(await blob.arrayBuffer()), mime: blob.type };
+    const canvas = document.createElement('canvas');
+    try {
+      for (const [edge, quality] of [[1600, 0.82], [1400, 0.74], [1200, 0.68], [1000, 0.62], [800, 0.55]]) {
+        const scale = Math.min(1, edge / Math.max(bitmap.width, bitmap.height));
+        canvas.width = Math.max(1, Math.round(bitmap.width * scale)); canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+        const context = canvas.getContext('2d'); if (!context) throw new Error('浏览器无法处理这张图片。');
+        context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+        const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/webp', quality));
+        if (blob && blob.size <= 1_000_000) return { bytes: new Uint8Array(await blob.arrayBuffer()), mime: blob.type };
+      }
+      throw new Error('压缩后仍超过 1 MB，请选择分辨率更低的图片。');
+    } finally { canvas.width = canvas.height = 0; }
   } finally { bitmap.close(); }
 }
 $('image-button').onclick = () => { if (!blocked && !sending) $('image-input').click(); };
@@ -281,7 +316,7 @@ $('image-input').onchange = async () => {
   try {
     prepared = await prepareImage(file); if (self !== user) return;
     const message = encryptMessage(user, c.peer, c.id, b64(prepared.bytes), { type: 'image', ttlMs: Math.min(Number($('ttl').value), 86400000), mime: prepared.mime });
-    await api(`/api/conversations/${c.id}/messages`, 'POST', message); if (selected?.id === c.id) await refreshMessages(); toast('图片已在本机加密并发送。');
+    await api(`/api/conversations/${c.id}/messages`, 'POST', message); if (selected?.id === c.id) await refreshMessages(); toast('图片已在本机压缩、加密并发送。');
   } catch (error) { toast(error.message); } finally { wipe(prepared?.bytes); sending = false; checkTrust(); }
 };
 async function openImage(m, button) {
@@ -318,6 +353,6 @@ setInterval(() => sync(false), 500);
 try {
   if (!window.isSecureContext || !crypto.subtle) throw new Error('请使用 http://127.0.0.1 本机地址或 HTTPS 临时网址。');
   await ready; const health = await api('/api/health'); cloudMode = health.environment === 'cloud';
-  if (cloudMode) pollIntervalMs = Math.max(5000, Number(health.pollIntervalMs) || 5000);
+  if (cloudMode) pollIntervalMs = Math.max(2000, Number(health.pollIntervalMs) || 2000);
   $('auth-submit').disabled = false; setMode('login');
 } catch (error) { $('auth-error').textContent = '加密组件无法启动：' + error.message; $('auth-submit').textContent = '无法启动'; }
