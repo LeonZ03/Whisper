@@ -10,7 +10,7 @@
 <body>
   <section id="auth-screen" class="auth-shell">
     <aside class="intro">
-      <a class="brand brand-light" href="/" aria-label="Whisper 首页"><span class="brand-mark">w</span> whisper<span class="edition">LOCAL</span></a>
+      <a class="brand brand-light" href="/" aria-label="Whisper 首页"><span class="brand-mark" aria-hidden="true"></span> whisper<span class="edition">LOCAL</span></a>
       <div class="intro-copy"><span class="eyebrow">JUST BETWEEN US</span><h1>话，只说给<br>想说的人听。</h1><p>一个安静的双人聊天空间。<br>消息在浏览器里加密，也只在浏览器里解开。</p><div class="intro-rule"></div><div class="intro-features"><span>01 / 申请加入</span><span>02 / 双人会话</span><span>03 / 到期清理</span></div></div>
       <p class="intro-foot">私人实验项目，不是经过审计的安全通信产品。</p>
     </aside>
@@ -32,12 +32,12 @@
     </div><footer class="auth-footer">端到端加密原型 <span>·</span> 无群聊 <span>·</span> 无广告与第三方统计</footer></main>
   </section>
   <section id="chat-screen" class="workspace" hidden>
-    <header class="app-header"><a class="brand" href="/"><span class="brand-mark">w</span><span class="brand-label"><span>whisper</span><small class="app-version" data-app-version aria-label="网页版本"></small></span></a><span class="header-caption">私人会话</span><div class="header-right"><span id="connection" class="connection">正在连接</span><span id="self-name"></span><button id="account-settings" class="quiet" type="button">修改密码</button><button id="logout" class="quiet">退出</button></div></header>
+    <header class="app-header"><a class="brand" href="/"><span class="brand-mark" aria-hidden="true"></span><span class="brand-label"><span>whisper</span><small class="app-version" data-app-version aria-label="网页版本"></small></span></a><span class="header-caption">私人会话</span><div class="header-right"><span id="connection" class="connection">正在连接</span><span id="self-name"></span><button id="account-settings" class="quiet" type="button">修改密码</button><button id="logout" class="quiet">退出</button></div></header>
     <div id="chat-body" class="app-body"><aside class="sidebar"><div class="sidebar-heading"><h2>会话</h2><span class="small-pill">仅双人</span></div>
       <form id="new-chat-form"><label class="sr-only" for="peer-name">对方用户名</label><div class="search"><span>@</span><input id="peer-name" placeholder="输入对方完整用户名" pattern="[a-z0-9_]{3,24}" required maxlength="24"><button title="开始会话" aria-label="开始会话" type="submit">＋</button></div></form>
       <p class="sidebar-hint">只有知道用户名的人，才能找到彼此。</p><nav id="conversations" aria-label="会话列表"></nav><div class="sidebar-bottom"><span class="dot"></span><span id="entry-kind">本机入口</span><p>关闭页面会锁定本机密钥。<br>重新登录可恢复未到期消息。</p></div>
     </aside>
-    <main class="chat-main"><div id="empty-state" class="empty-state"><div class="empty-icon">w</div><h2>从一句话开始</h2><p>让朋友申请账号，管理员批准后，<br>在左侧输入对方的用户名开启双人会话。</p><span class="muted-tag">同一台电脑测试：使用两个浏览器或无痕窗口</span></div>
+    <main class="chat-main"><div id="empty-state" class="empty-state"><div class="empty-icon" aria-hidden="true"></div><h2>从一句话开始</h2><p>让朋友申请账号，管理员批准后，<br>在左侧输入对方的用户名开启双人会话。</p><span class="muted-tag">同一台电脑测试：使用两个浏览器或无痕窗口</span></div>
       <section id="conversation-panel" class="conversation-panel" hidden>
         <header class="chat-header"><div class="peer-heading"><div id="peer-avatar" class="avatar"></div><div><h2 id="peer-title"></h2><p>双人加密会话</p></div></div><div class="chat-actions"><button id="verify" class="quiet">核对安全码</button><button id="clear-chat" class="quiet danger-text">双方清空</button></div></header>
         <div id="trust-notice" class="trust-notice">首次会话，请通过可信渠道核对双方安全码。</div>

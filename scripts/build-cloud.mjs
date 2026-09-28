@@ -12,7 +12,7 @@ const pkg=JSON.parse(readFileSync(join(root,'package.json')));
 let commit=process.env.WORKERS_CI_COMMIT_SHA||process.env.GITHUB_SHA;
 if(!commit)try{commit=execFileSync('git',['rev-parse','HEAD'],{cwd:root,encoding:'utf8'}).trim();}catch{commit='local';}
 rmSync(out,{recursive:true,force:true});mkdirSync(assets,{recursive:true});
-for(const name of ['index.html','style.css','favicon.svg','cli.html','cli-install.css','cli-install.mjs','cli-command.mjs']) {
+for(const name of ['index.html','style.css','brand-mark.svg','favicon.svg','cli.html','cli-install.css','cli-install.mjs','cli-command.mjs']) {
   writeFileSync(join(assets,name),readFileSync(join(root,'public',name)));
 }
 await build({absWorkingDir:root,entryPoints:['src/app.mjs'],outfile:join(assets,'app.js'),bundle:true,minify:true,
