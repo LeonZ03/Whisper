@@ -1,5 +1,7 @@
 import { TTL, normalizeServer } from './client.mjs';
 import { CommandTranscript, historyCommand } from './transcript.mjs';
+import { readFileSync } from 'node:fs';
+export const CLIENT_VERSION = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
 export const HELP = [
   '命令 / Commands', '', '/login              登录已有账号（密码隐藏输入）', '/register           提交注册申请，等待审批',
   '/passwd             修改密码并保留身份', '/recover            使用一次性恢复码重建身份',
@@ -117,7 +119,7 @@ export class ChatApplication {
         body = combined.body; bodyKeys = combined.keys; bodyStyles = combined.styles;
       }
     }
-    this.ui.set({ header: [' Whisper CLI  /  双人加密聊天', ` ${c.server}`, ` ${identity}  ·  ${status}`, c.user ? ` ${security}  ·  保留 ${c.ttl}  ·  /help 帮助` : ' 本机加解密 · 不保存明文文件 · /help 帮助'], body, bodyKeys, bodyStyles, bodyKind,
+    this.ui.set({ header: [` Whisper CLI ${CLIENT_VERSION}  /  双人加密聊天`, ` ${c.server}`, ` ${identity}  ·  ${status}`, c.user ? ` ${security}  ·  保留 ${c.ttl}  ·  /help 帮助` : ' 本机加解密 · 不保存明文文件 · /help 帮助'], body, bodyKeys, bodyStyles, bodyKind,
       commandScope: this.commandScope(), focusKey: this.outputFocus,
       selfName: c.user?.username, connected: c.connected, securityRole: c.user ? (trust.blocked ? 'error' : trust.verified ? 'success' : 'warning') : null,
       historyKey: `${c.server}:${c.user?.id || ''}:${c.selected?.id || ''}:${c.connected}:${trust.blocked}:${this.overlay ? body[0] : 'chat'}`, startAtTop: Boolean(this.overlay),

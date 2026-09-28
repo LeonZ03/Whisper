@@ -9,6 +9,7 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
+const { version } = JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8'));
 const stretch = promisify(scrypt);
 const DAY = 86_400_000;
 const USERNAME = /^[a-z0-9_]{3,24}$/;
@@ -144,7 +145,7 @@ export async function createWhisperServer(options = {}) {
     try { return (await stretch(secret, salt, 32, { N: 131072, r: 8, p: 1, maxmem: 192 * 1024 * 1024 })).toString('base64'); }
     finally { authBusy--; }
   }
-  app.get('/api/health', (_req, res) => res.json({ ok: true, app: 'Whisper', version: '0.5.0', instance, registration: 'approval', passwordPolicy: { min: 1, max: 12 }, capabilities: ['message-history-v1', 'accounts-v2'] }));
+  app.get('/api/health', (_req, res) => res.json({ ok: true, app: 'Whisper', version, instance, registration: 'approval', passwordPolicy: { min: 1, max: 12 }, capabilities: ['message-history-v1', 'accounts-v2'] }));
   function accountsFor(req) {
     const origin = originFor(req);
     const request = new Request(origin + req.originalUrl, { headers: Object.fromEntries(Object.entries(req.headers).map(([k,v]) => [k, Array.isArray(v) ? v.join(', ') : String(v || '')])) });

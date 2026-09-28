@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createWhisperServer } from '../server/app.mjs';
 let app, dir;
+const { version } = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
 test.beforeAll(async () => { dir = mkdtempSync(join(tmpdir(), 'whisper-browser-')); app = await createWhisperServer({ dataDir: dir, port: 0 }); mkdirSync('test-results', { recursive: true }); });
 test.afterAll(async () => { await app?.close(); if (dir) rmSync(dir, { recursive: true, force: true }); });
 test('两个浏览器真实加密聊天、图片、删除、越权及跨入口登录', async ({ browser }) => {
@@ -26,10 +27,21 @@ test('两个浏览器真实加密聊天、图片、删除、越权及跨入口�
   }
   try {
     await a.goto(app.localUrl); await expect(a.locator('#auth-submit')).toBeEnabled();
+    await expect(a.locator('#auth-screen [data-app-version]')).toHaveText(`v${version}`);
+    expect(await a.evaluate(async () => (await (await fetch('/api/health')).json()).version)).toBe(version);
     await a.screenshot({ path: 'test-results/login-desktop.png', fullPage: true });
+    await a.setViewportSize({ width: 390, height: 844 });
+    await expect(a.getByRole('link', { name: 'CLI 安装与使用' })).toBeVisible();
+    expect(await a.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await a.screenshot({ path: 'test-results/login-mobile.png', fullPage: true });
+    await a.getByRole('link', { name: 'CLI 安装与使用' }).click();
+    await expect(a).toHaveURL(app.localUrl + '/cli.html');
+    await expect(a.getByRole('heading', { name: '安装一次，之后直接 whisper。' })).toBeVisible();
+    await a.setViewportSize({ width: 1365, height: 900 });
     await apply(a, 'alice_demo'); await apply(b, 'bobby_demo'); await apply(c, 'carol_demo');
     for (const username of ['alice_demo','bobby_demo','carol_demo']) app.db.prepare("UPDATE users SET status='active', reviewed_at=? WHERE username=? AND status='pending'").run(Date.now(), username);
     await login(a, 'alice_demo'); await login(b, 'bobby_demo'); await login(c, 'carol_demo');
+    await expect(a.locator('#chat-screen [data-app-version]')).toHaveText(`v${version}`);
     await a.locator('#peer-name').fill('bobby_demo'); await a.getByRole('button', { name: '开始会话', exact: true }).click();
     await expect(a.locator('#peer-title')).toHaveText('bobby_demo');
     await b.getByRole('button', { name: '与 alice_demo 的会话' }).click({ timeout: 10000 });

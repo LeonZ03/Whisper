@@ -3,6 +3,7 @@ import { MessageLifecycle } from './message-lifecycle.mjs';
 import { accountUI } from './account-ui.mjs';
 import { prepareEnrollment, validateNewPassword } from './account-client.mjs';
 const $ = (id) => document.getElementById(id);
+for (const label of document.querySelectorAll('[data-app-version]')) label.textContent = `v${__APP_VERSION__}`;
 let self = null, selected = null, conversations = [], messages = [], mode = 'login';
 let syncing = false, generation = 0, toastTimer, signature = '', imageTimer, imageUrl, viewingId, safetyPeer;
 let blocked = false, sending = false;

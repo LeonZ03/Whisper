@@ -16,7 +16,8 @@ for(const name of ['index.html','style.css','favicon.svg','cli.html','cli-instal
   writeFileSync(join(assets,name),readFileSync(join(root,'public',name)));
 }
 await build({absWorkingDir:root,entryPoints:['src/app.mjs'],outfile:join(assets,'app.js'),bundle:true,minify:true,
-  platform:'browser',format:'esm',target:['es2022'],sourcemap:false,legalComments:'eof'});
+  platform:'browser',format:'esm',target:['es2022'],sourcemap:false,legalComments:'eof',
+  define:{__APP_VERSION__:JSON.stringify(pkg.version)}});
 const html=readFileSync(join(assets,'index.html'),'utf8').replace('class="edition">LOCAL','class="edition">CLOUD');
 writeFileSync(join(assets,'index.html'),html);
 writeFileSync(join(assets,'_headers'),'/*\n'+Object.entries({...SECURITY_HEADERS,'Strict-Transport-Security':'max-age=31536000'}).map(([k,v])=>'  '+k+': '+v).join('\n')+'\n');

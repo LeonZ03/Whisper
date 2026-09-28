@@ -1,7 +1,9 @@
 import { test, expect } from '@playwright/test';
 import { cloudFixture } from './cloud-fixture.mjs';
 import { WhisperClient } from '../cli/client.mjs';
+import { readFileSync } from 'node:fs';
 let app;
+const { version } = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
 test.beforeAll(async()=>{app=await cloudFixture();});
 test.afterAll(async()=>{await app?.close();});
 test('cloud Worker: real browser and CLI share encrypted messages and countdowns',async({browser})=>{
@@ -15,6 +17,7 @@ test('cloud Worker: real browser and CLI share encrypted messages and countdowns
     await bob.authenticate({username:'cloud_bobby',password});
     expect(bob.pollIntervalMs).toBe(2000);
     await page.goto(app.url);await expect(page.locator('#auth-submit')).toBeEnabled();
+    await expect(page.locator('#auth-screen [data-app-version]')).toHaveText(`v${version}`);
     expect(await page.evaluate(async () => (await (await fetch('/api/health')).json()).pollIntervalMs)).toBe(2000);
     await page.locator('#register-tab').click();await page.locator('#username').fill('cloud_alice');
     await page.locator('#password').fill(password);
@@ -22,6 +25,7 @@ test('cloud Worker: real browser and CLI share encrypted messages and countdowns
     await app.approve('cloud_alice'); await page.locator('#login-tab').click();
     await page.locator('#username').fill('cloud_alice');await page.locator('#password').fill(password);await page.locator('#auth-submit').click();
     await expect(page.locator('#chat-screen')).toBeVisible({timeout:20000});
+    await expect(page.locator('#chat-screen [data-app-version]')).toHaveText(`v${version}`);
     await expect(page.locator('#entry-kind')).toHaveText('云端服务');
     await page.locator('#peer-name').fill('cloud_bobby');await page.getByRole('button',{name:'开始会话',exact:true}).click();
     await expect(page.locator('#peer-title')).toHaveText('cloud_bobby');

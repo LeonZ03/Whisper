@@ -5,7 +5,7 @@
 
 **这是未经安全审计的个人原型，不承诺完全匿名、前向保密、防截图或远程彻底擦除。请先使用非敏感内容。**
 
-## 云端部署（0.5.1）
+## 云端部署（0.5.2）
 
 正式域名已绑定为 `https://whisper.leonz03.dpdns.org`，云端使用 Workers + Static Assets + D1。
 账号审批与认证升级已于 2026-09-24 发布到正式域名；增量迁移、自动构建和线上合成账号验收均已完成。发布记录见[部署手册](cloud/DEPLOYMENT.md)。
@@ -14,6 +14,7 @@ Cloudflare 中已创建 Worker `whisper` 和独立数据库 `whisper-production`
 云端和本机账号、聊天记录不自动同步；两边分别申请账号并等待各自的所有者审批，首次聊天需核对安全码。
 
 直接访问 [正式网页](https://whisper.leonz03.dpdns.org)；[CLI 安装页](https://whisper.leonz03.dpdns.org/cli.html) 提供当前安装／更新命令。
+网站首页也有“CLI 安装与使用”入口；登录页及聊天页显示网页版本，CLI 顶栏显示已安装客户端的版本。
 新版本不再使用邀请码。首次建立 root 管理员及恢复 root 的方法见下文。
 
 ```powershell
