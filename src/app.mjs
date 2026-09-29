@@ -1,11 +1,17 @@
 import { ready, b64, unb64, wipe, deriveCredentials, unlockIdentity, encryptMessage, decryptMessage, safetyCode } from './crypto.mjs';
 import { MessageLifecycle, dissolveViewOnceImage } from './message-lifecycle.mjs';
 import { createAccountSessionsUI } from './account-sessions-ui.mjs';
+import { createWebAccountUI } from './web-account-ui.mjs';
+import { createWebLoginStore } from './web-login-store.mjs';
 import { accountUI } from './account-ui.mjs';
 import { prepareEnrollment, validateNewPassword } from './account-client.mjs';
 import { requestAPI as api } from './api-transport.mjs';
 const $ = (id) => document.getElementById(id);
 const android = Boolean(globalThis.whisperAndroidRequest);
+const webLoginStore = android ? null : createWebLoginStore();
+let webPaused = false, authAttempt = 0;
+const loginChannel = !android && globalThis.BroadcastChannel ? new BroadcastChannel('whisper-login-control-v1') : null;
+if (loginChannel) loginChannel.onmessage = event => { if (event.data === 'logout') lock({ broadcast: false }); };
 function mobileView(view) {
   if (!android) return;
   $('chat-screen').dataset.view = view;
@@ -100,6 +106,7 @@ $('recovery-form').onsubmit = async event => {
     validateNewPassword(password);
     identity = await prepareEnrollment(password);
     await api('/api/auth/recover', 'POST', { username, recoveryCode, ...identity });
+    await webLoginStore?.clear();
     toast('新身份已设置。请重新登录，并与联系人通过可信渠道核对新安全码。');
     form.hidden = true; setMode('login'); $('username').value = username;
   } catch (error) { $('recovery-error').textContent = error.message; }
@@ -107,9 +114,11 @@ $('recovery-form').onsubmit = async event => {
 };
 $('auth-form').onsubmit = async (event) => {
   event.preventDefault(); if ($('auth-submit').disabled) return;
-  if (android && savedLoginPending) { generation++; savedLoginPending = false; globalThis.whisperAndroidClearSession(); hideRestoreNotice(); }
+  const attempt = ++authAttempt;
+  const checkAttempt = () => { if (attempt !== authAttempt || webPaused || androidPaused) throw Error('登录已取消。'); };
+  if (savedLoginPending) { generation++; savedLoginPending = false; if (android) globalThis.whisperAndroidClearSession(); else await webLoginStore.clear(); hideRestoreNotice(); }
   const username = $('username').value.trim().toLowerCase(); let password = $('password').value;
-  const currentMode = mode; const activationCode = $('activation-code').value; let credentials, secretKey;
+  const currentMode = mode; const activationCode = $('activation-code').value; let credentials, secretKey, issued = false;
   $('auth-submit').disabled = true; $('login-tab').disabled = true; $('register-tab').disabled = true;
   $('auth-submit').textContent = '正在解锁本机密钥…'; $('auth-error').textContent = '';
   try {
@@ -121,12 +130,18 @@ $('auth-form').onsubmit = async (event) => {
       setMode('login'); toast('申请已提交，请等待管理员审批后登录。'); return;
     }
     const salt = (await api('/api/auth/salt?username=' + encodeURIComponent(username))).salt;
-    credentials = await deriveCredentials(password, salt); password = ''; $('password').value = '';
+    checkAttempt(); credentials = await deriveCredentials(password, salt); password = ''; $('password').value = ''; checkAttempt();
+    const persistent = android || await webLoginStore.available(); checkAttempt();
     let user;
-    user = await api('/api/auth/login', 'POST', { username, authKey: b64(credentials.authKey), activationCode });
+    user = await api('/api/auth/login', 'POST', { username, authKey: b64(credentials.authKey), activationCode, persistent }); issued = true; checkAttempt();
     secretKey = unlockIdentity(user, credentials.vaultKey);
+    if (!android && persistent && !user.mustChangePassword) {
+      await webLoginStore.save({ v: 1, id: user.id, username: user.username, publicKey: user.publicKey, secretKey: b64(secretKey) }); checkAttempt();
+    }
     await enterUser(user, secretKey, activationCode, true);
+    if (!persistent) toast('浏览器无法保护保存登录，关闭页面后需重新登录。');
   } catch (error) {
+    if (!self && issued && attempt === authAttempt) { await webLoginStore?.clear().catch(() => {}); await api('/api/auth/logout', 'POST').catch(() => {}); }
     if (!self) wipe(secretKey); $('auth-error').textContent = error.message;
   } finally {
     password = ''; wipe(credentials?.authKey); wipe(credentials?.vaultKey);
@@ -152,10 +167,14 @@ async function enterUser(user, secretKey, activationCode = '', save = false) {
   $('activation-code').value = ''; selected = null; conversations = []; messages = []; signature = ''; renderConversations();
   $('empty-state').hidden = false; $('conversation-panel').hidden = true;
   await accountControls.enter(self);
+  webAccountUI?.enter(self);
   if (self?.role === 'member') await sync();
 }
 function hideRestoreNotice() {
   $('login-restore-status')?.remove(); $('retry-login')?.remove(); $('restore-logout')?.remove();
+  if ($('web-startup')) $('web-startup').hidden = true;
+  $('chat-screen').removeAttribute('aria-busy'); $('new-chat-form').inert = false;
+  if ($('web-nav')) $('web-nav').inert = false;
   if (android) {
     $('startup-screen').hidden = true; $('chat-screen').removeAttribute('aria-busy');
     $('new-chat-form').inert = false; $('mobile-nav').inert = false;
@@ -165,27 +184,30 @@ function restoreNotice(text, retryable = false) {
   hideRestoreNotice();
   $('auth-screen').hidden = true; $('chat-screen').hidden = false; mobileView('conversations');
   $('chat-screen').setAttribute('aria-busy', String(!retryable));
-  $('new-chat-form').inert = true; $('mobile-nav').inert = true;
+  $('new-chat-form').inert = true; if ($('mobile-nav')) $('mobile-nav').inert = true;
+  if ($('web-nav')) $('web-nav').inert = true;
   const status = document.createElement('p'); status.id = 'login-restore-status'; status.className = 'field-help'; status.setAttribute('role', 'status'); status.textContent = text;
   $('conversations').before(status);
   if (retryable) {
-    const retry = document.createElement('button'); retry.id = 'retry-login'; retry.type = 'button'; retry.className = 'quiet'; retry.textContent = '重试连接'; retry.onclick = () => void restoreAndroidLogin();
+    const retry = document.createElement('button'); retry.id = 'retry-login'; retry.type = 'button'; retry.className = 'quiet'; retry.textContent = '重试连接'; retry.onclick = () => void restoreSavedLogin();
     const logout = document.createElement('button'); logout.id = 'restore-logout'; logout.type = 'button'; logout.className = 'quiet'; logout.textContent = '退出登录'; logout.onclick = () => $('logout').click();
     $('conversations').before(retry, logout);
   }
 }
-async function restoreAndroidLogin() {
-  if (!android || self || restoringLogin || androidPaused) return;
+async function restoreSavedLogin() {
+  if (self || restoringLogin || androidPaused || webPaused) return;
   let key, saved; const epoch = generation; restoringLogin = true;
   try {
-    saved = await globalThis.whisperAndroidRestoreLogin(); if (epoch !== generation) return;
+    try { saved = android ? await globalThis.whisperAndroidRestoreLogin() : await webLoginStore.load(); }
+    catch { throw Object.assign(Error('保存的登录不可读取'), { status: 401 }); }
+    if (epoch !== generation) return;
     if (!saved) { savedLoginPending = false; hideRestoreNotice(); $('chat-screen').hidden = true; $('auth-screen').hidden = false; return; }
     savedLoginPending = true; $('auth-submit').disabled = true; $('auth-submit').textContent = '正在恢复登录…';
     if (saved.v !== 1 || typeof saved.id !== 'string' || typeof saved.publicKey !== 'string' || typeof saved.secretKey !== 'string') throw Object.assign(Error('保存的身份无效'), { status: 401 });
     key = unb64(saved.secretKey); if (key.length !== 32) throw Object.assign(Error('保存的身份无效'), { status: 401 });
     restoreNotice('正在同步会话…');
     const me = await api('/api/account/me');
-    if (epoch !== generation || androidPaused) return;
+    if (epoch !== generation || androidPaused || webPaused) return;
     if (me.id !== saved.id || me.publicKey !== saved.publicKey || me.mustChangePassword) throw Object.assign(Error('账号状态已变化'), { status: 401 });
     savedLoginPending = false; const sessionKey = key; key = null; await enterUser(me, sessionKey);
   } catch (error) {
@@ -195,13 +217,22 @@ async function restoreAndroidLogin() {
   } finally {
     wipe(key); saved = null; restoringLogin = false;
     $('auth-submit').disabled = false; $('auth-submit').textContent = mode === 'register' ? '提交申请' : '解锁并进入';
-    if (savedLoginPending && epoch !== generation && !androidPaused) void restoreAndroidLogin();
+    if (savedLoginPending && epoch !== generation && !androidPaused && !webPaused) void restoreSavedLogin();
   }
 }
-function lock() {
+function lock({ keepSaved = false, broadcast = true } = {}) {
+  authAttempt++;
+  // Closing a page preserves a seal already being written for the login that
+  // just succeeded. Explicit logout still cancels and clears queued writes.
+  if (!keepSaved) webLoginStore?.cancel();
+  if (!android && !keepSaved) {
+    void webLoginStore.clear().catch(() => toast('浏览器未能清除登录存储，请清除此站点数据。'));
+    if (broadcast) loginChannel?.postMessage('logout');
+  }
   savedLoginPending = false; hideRestoreNotice();
   generation++; wipe(self?.secretKey); self = null; selected = null; conversations = []; messages = []; signature = '';
   accountControls.clear();
+  webAccountUI?.clear();
   sessionsUI?.clear();
   closeImage(); $('safety-dialog').close(); $('message-input').value = ''; $('password').value = ''; $('activation-code').value = '';
   clearMessageView(); $('conversations').replaceChildren(); $('safety-code').textContent = '';
@@ -214,13 +245,24 @@ function lock() {
   }
 }
 const accountControls = accountUI({ api, getSelf: () => self, lock, toast });
+const webAccountUI = !android ? createWebAccountUI({ api, getSelf: () => self, onLeaveChat: () => { closeImage(); $('safety-dialog').close(); } }) : null;
+if (!android) globalThis.whisperWebSessionRevoked = () => { if (self) { lock(); toast('登录已撤销，请重新登录。'); } };
 const sessionsUI = android ? createAccountSessionsUI({ root: $('device-history-list'), summary: $('current-device-name'),
   fetchImpl: async (path, options) => {
     const payload = await api(path); if (options.signal.aborted) throw new DOMException('Aborted', 'AbortError');
     return { ok: true, json: async () => payload };
   } }) : null;
 if (android) $('mobile-nav').before($('admin-panel'));
-$('logout').onclick = async () => { try { await api('/api/auth/logout', 'POST'); } catch {} finally { lock(); } };
+$('logout').onclick = async () => {
+  $('logout').disabled = true;
+  // Native transport obtains the cookie from its vault. Revoke it before
+  // clearing that vault; browser HttpOnly cookies survive the memory lock.
+  if (!android) lock();
+  else { authAttempt++; generation++; closeImage(); clearMessageView(); }
+  $('auth-submit').disabled = true;
+  try { await api('/api/auth/logout', 'POST'); } catch {}
+  finally { if (android) lock(); $('auth-submit').disabled = false; $('logout').disabled = false; }
+};
 function renderConversations() {
   const fragment = document.createDocumentFragment();
   for (const c of conversations) {
@@ -474,7 +516,7 @@ if (android) {
   globalThis.whisperAndroidPause = () => { androidPaused = true; generation++; closeImage(); clearMessageView(); sessionsUI.clear(); };
   globalThis.whisperAndroidResume = () => {
     androidPaused = false; lifecycle.tick({ animate: false });
-    if (savedLoginPending) void restoreAndroidLogin();
+    if (savedLoginPending) void restoreSavedLogin();
     else { void sync(); if (self && ['my', 'devices'].includes($('chat-screen').dataset.view)) void sessionsUI.load(); }
   };
   globalThis.whisperAndroidLock = lock;
@@ -484,18 +526,24 @@ document.addEventListener('visibilitychange', () => {
   lifecycle.tick({ animate: false });
   if (document.hidden) closeImage(); else sync();
 });
-window.addEventListener('focus', () => lifecycle.tick({ animate: false }));
+window.addEventListener('focus', () => { lifecycle.tick({ animate: false }); webAccountUI?.resume(); });
 window.addEventListener('offline', () => { connection(false); closeImage(); clearMessageView(); signature = ''; });
-window.addEventListener('online', () => { if (savedLoginPending) void restoreAndroidLogin(); else void sync(); });
-window.addEventListener('pagehide', () => { if (android) globalThis.whisperAndroidPause(); else lock(); });
+window.addEventListener('online', () => { if (savedLoginPending) void restoreSavedLogin(); else { void sync(); webAccountUI?.resume(); } });
+window.addEventListener('pagehide', () => { if (android) globalThis.whisperAndroidPause(); else { webPaused = true; lock({ keepSaved: true }); } });
+window.addEventListener('pageshow', event => { if (!android && event.persisted) { webPaused = false; void restoreSavedLogin(); } });
 setInterval(() => sync(false), 500);
 try {
   if (!window.isSecureContext || !crypto.subtle) throw new Error('请使用 http://127.0.0.1 本机地址或 HTTPS 临时网址。');
   await ready;
-  // The APK has a fixed cloud endpoint; a health round-trip must not delay startup.
-  const health = android ? { environment: 'cloud', pollIntervalMs: 2000 } : await api('/api/health');
-  cloudMode = health.environment === 'cloud';
-  if (cloudMode) pollIntervalMs = Math.max(2000, Number(health.pollIntervalMs) || 2000);
+  // Health discovery and protected-login restore run together, so an extra
+  // health round-trip never blocks the saved account's empty conversation shell.
+  const healthReady = (async () => {
+    const health = android ? { environment: 'cloud', pollIntervalMs: 2000 } : await api('/api/health').catch(() => ({ environment: location.protocol === 'https:' ? 'cloud' : 'local' }));
+    cloudMode = health.environment === 'cloud';
+    if (cloudMode) pollIntervalMs = Math.max(2000, Number(health.pollIntervalMs) || 2000);
+    if (self) { $('entry-kind').textContent = cloudMode ? '云端服务' : location.hostname.endsWith('.trycloudflare.com') ? '临时链接入口' : '本机入口'; webAccountUI?.resume(); }
+  })();
   $('auth-submit').disabled = false; setMode('login');
-  if (android) await restoreAndroidLogin();
-} catch (error) { if (android) { hideRestoreNotice(); $('auth-screen').hidden = false; } $('auth-error').textContent = '加密组件无法启动：' + error.message; $('auth-submit').textContent = '无法启动'; }
+  await restoreSavedLogin();
+  await healthReady;
+} catch (error) { hideRestoreNotice(); $('auth-screen').hidden = false; $('auth-error').textContent = '加密组件无法启动：' + error.message; $('auth-submit').textContent = '无法启动'; }

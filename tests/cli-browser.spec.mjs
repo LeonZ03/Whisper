@@ -35,7 +35,7 @@ test('CLI 与网页互通：共用账号、双向加密、安全码、双方删�
     await page.locator('#image-input').setInputFiles({ name: 'sample.png', mimeType: 'image/png', buffer: Buffer.from(png, 'base64') });
     await expect.poll(async () => { await client.sync(); return client.viewMessages().at(-1)?.text || ''; }).toContain('CLI 不领取');
     expect(app.db.prepare("SELECT consumed_at FROM messages WHERE type='image'").get().consumed_at).toBe(null);
-    await page.locator('#logout').click(); await page.locator('#login-tab').click();
+    await page.locator('#nav-my').click(); await page.locator('#logout').click(); await page.locator('#login-tab').click();
     await page.locator('#username').fill('terminal_user'); await page.locator('#password').fill(password);
     await page.locator('#auth-submit').click(); await expect(page.locator('#chat-screen')).toBeVisible();
     await page.getByRole('button', { name: '与 browser_user 的会话' }).click();

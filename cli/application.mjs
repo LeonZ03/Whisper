@@ -1,10 +1,13 @@
 import { TTL, normalizeServer } from './client.mjs';
 import { CommandTranscript, historyCommand } from './transcript.mjs';
+import { accountLines, deviceLines, PRIVACY_LINES } from './account-ui.mjs';
+import { safeText } from './theme.mjs';
 import { readFileSync } from 'node:fs';
 export const CLIENT_VERSION = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
 export const HELP = [
   '命令 / Commands', '', '/login              登录已有账号（密码隐藏输入）', '/register           提交注册申请，等待审批',
   '/passwd             修改密码并保留身份', '/recover            使用一次性恢复码重建身份',
+  '/me                 账号、当前设备、服务与版本', '/devices            最近十次设备登录记录', '/privacy            隐私与边界',
   '/chats              会话列表；输入序号选择', '/chat 用户名        与这个用户聊天 / 切换会话',
   '/safety             查看并核对完整安全码；公钥变化时可重新固定', '/ttl 1m|1h|24h|7d   设置以后发送的文字保留时间',
   '/delete 消息序号    双方删除一条消息（需要确认）', '/clear              清空当前双方记录（需要确认）',
@@ -19,6 +22,9 @@ export const COMMAND_ITEMS = [
   { name: '/register', description: '提交注册申请，等待审批' },
   { name: '/passwd', description: '修改密码，保留身份' },
   { name: '/recover', description: '一次性恢复码重建身份' },
+  { name: '/me', description: '我的账号、当前设备、服务与版本' },
+  { name: '/devices', description: '最近十次设备登录记录' },
+  { name: '/privacy', description: '隐私与边界' },
   { name: '/chats', description: '查看会话列表' },
   { name: '/chat', description: '选择联系人：/chat 用户名', argument: true },
   { name: '/safety', description: '核对双方安全码' },
@@ -40,6 +46,13 @@ export class ChatApplication {
     this.overlay = null; this.overlayKind = null; this.chatChoices = [];
     this.transcript = new CommandTranscript(); this.outputFocus = null;
     this.busy = false; this.closed = false; this.nextPoll = 0; this.failures = 0; this.syncing = null;
+    this.ui.on('expiry', (now) => {
+      const clear = (body, styles) => body?.forEach((_, i) => { if (Number.isFinite(styles?.[i]?.expiresAt) && styles[i].expiresAt <= now) body[i] = ''; });
+      clear(this.chatCache?.body, this.chatCache?.styles);
+      this.chatCache?.groups?.forEach((group) => clear(group.body, group.styles));
+      if (this.sendPreview?.expiresAt <= now) this.clearSendPreview();
+      this.chatCache = null; this.transcript.cache = null;
+    });
     this.done = new Promise((resolve) => { this.resolveDone = resolve; });
   }
   set notice(value) { this._notice = String(value ?? ''); this.noticeRole = 'muted'; }
@@ -49,18 +62,30 @@ export class ChatApplication {
   commandScope() { return JSON.stringify([this.client.server, this.client.user?.id || '']); }
   showOutput(command, lines, kind = 'info') {
     this.transcript.setIdentity(this.commandScope());
-    this.outputFocus = this.transcript.show(this.scope(), this.client.messages.at(-1)?.seq || 0, command, lines);
+    const focus = this.transcript.show(this.scope(), this.client.messages.at(-1)?.seq || 0, command, lines, { literal: kind === 'account' });
+    this.outputFocus = kind === 'account' && this.ui.scroll > 0 ? null : focus;
     this.overlay = null; this.overlayKind = kind;
   }
   async start() {
+    this.busy = true; this.ui.busy = true;
     this.ui.on('line', (line, literal) => { if (!this.busy && !this.closed) this.operation = this.execute(line, literal); });
     this.ui.on('quit', () => { void this.close(); });
     this.ui.on('escape', () => { this.overlay = null; this.overlayKind = null; this.render(); });
     this.ui.commands = COMMAND_ITEMS;
     this.ui.on('history', () => { void this.loadPrevious(); });
     this.ui.start(); this.render(); this.interval = setInterval(() => { void this.tick(); }, 500);
-    try { await this.client.health(); this.notify('服务已连接。输入 /login 或 /register。', 'success'); }
-    catch { this.notify('服务未连接：先运行 start.cmd，或 /server 设置正确地址。', 'warning'); }
+    this.startup = (async () => {
+      let healthReady = false;
+      try {
+        await this.client.health(); healthReady = true; if (this.closed) return;
+        if (this.client.restoreSavedLogin && await this.client.restoreSavedLogin()) {
+          if (!this.closed) await this.client.sync();
+          this.notify('已恢复本机受保护登录。用 /chats 选择会话。', 'success');
+        } else this.notify('服务已连接。输入 /login 或 /register。' + (this.client.loginNotice ? ' ' + safeText(this.client.loginNotice) : ''), this.client.loginNotice ? 'warning' : 'success');
+      }
+      catch (error) { this.notify(healthReady ? '无法恢复本机登录；受保护记录仍保留。' + safeText(error.message) : '服务未连接：先运行 start.cmd，或 /server 设置正确地址。', 'warning'); }
+    })();
+    await this.startup; this.startup = null; this.busy = false; this.ui.busy = false;
     this.render(); return this.done;
   }
   async loadPrevious() {
@@ -80,9 +105,11 @@ export class ChatApplication {
     const cache = this.chatCache;
     if (cache?.messages === c.messages && cache.peer === c.selected.peer.id && Date.now() < cache.expires) return cache;
     const body = [], keys = [], styles = [], groups = [];
-    for (const m of c.viewMessages()) {
+    const messages = c.viewMessages();
+    if (this.sendPreview) messages.push({ ...this.sendPreview, own: true, seq: Infinity, pending: true });
+    for (const m of messages) {
       const time = new Date(m.createdAt).toLocaleTimeString('zh-CN', { hour12: false });
-      const lines = [`${m.own ? '你' : '@' + c.selected.peer.username}  ${time}  #${m.seq}`, ...m.text.split('\n').map((line) => '  ' + line), ''];
+      const lines = [`${m.own ? '你' : '@' + c.selected.peer.username}  ${time}  ${m.pending ? m.status : '#' + m.seq}`, ...safeText(m.text).split('\n').map((line) => '  ' + line), ''];
       const start = body.length;
       lines.forEach((line, i) => {
         body.push(line); keys.push(`${m.id}:${i}`);
@@ -91,12 +118,14 @@ export class ChatApplication {
       groups.push({ seq: m.seq, body: body.slice(start), keys: keys.slice(start), styles: styles.slice(start) });
     }
     if (!body.length) { body.push('这里还没有消息。', '', '在下方输入文字，按 Enter 发送。'); body.forEach((_, i) => { keys.push('empty:' + i); styles.push({ role: 'ui' }); }); }
-    this.chatCache = { messages: c.messages, peer: c.selected.peer.id, expires: Math.min(Infinity, ...c.messages.map((m) => m.expiresAt)), body, keys, styles, groups };
+    this.chatCache = { messages: c.messages, peer: c.selected.peer.id, expires: Math.min(Infinity, ...messages.map((m) => m.expiresAt)), body, keys, styles, groups };
     return this.chatCache;
   }
   render() {
     if (this.closed) return; this.transcript.setIdentity(this.commandScope()); const c = this.client; let trust = { blocked: false, verified: false };
+    if (this.sendPreview && (this.sendPreview.scope !== this.scope() || !c.connected || this.sendPreview.expiresAt <= Date.now() || c.messages.some((m) => m.id === this.sendPreview.id))) this.clearSendPreview();
     try { trust = c.trust(); } catch (error) { trust.blocked = true; this.notify(error.message, 'error'); }
+    if (trust.blocked) this.clearSendPreview();
     const peer = c.selected ? ` → @${c.selected.peer.username}` : ' → 未选择联系人';
     const status = c.connected ? '已连接' : '离线 / 重连中', identity = c.user ? `@${c.user.username}${peer}` : '未登录';
     const security = trust.blocked ? '公钥变化，已阻止聊天' : trust.verified ? '已核对安全码' : '请用 /safety 核对安全码';
@@ -124,7 +153,7 @@ export class ChatApplication {
       selfName: c.user?.username, connected: c.connected, securityRole: c.user ? (trust.blocked ? 'error' : trust.verified ? 'success' : 'warning') : null,
       historyKey: `${c.server}:${c.user?.id || ''}:${c.selected?.id || ''}:${c.connected}:${trust.blocked}:${this.overlay ? body[0] : 'chat'}`, startAtTop: Boolean(this.overlay),
       latestSeq: c.messages.at(-1)?.seq || 0, canLoadOlder: !this.overlay && c.hasOlder, historyLoading: this.historyLoading,
-      notice: this.busy && !this.ui.pending ? '正在处理…' : this.notice,
+      notice: this.busy && !this.ui.pending ? this.sendPreview?.status || (this.notice === '发送中…' ? this.notice : '正在处理…') : this.notice,
       noticeRole: this.busy && !this.ui.pending ? 'accent' : this.noticeRole,
       hint: '↑↓ 历史命令 · / 菜单 · Enter 发送 · PgUp 翻阅 · Ctrl+End 底部', prompt: this.busy && !this.ui.pending ? '… ' : '› ' });
     this.outputFocus = null;
@@ -164,7 +193,7 @@ export class ChatApplication {
       this.render(); const result = await this.client.authenticate({ username, password, applicationMessage, register }); password = ''; applicationMessage = '';
       if (register) { this.overlay = null; this.notify(result.message || '申请已提交，请等待管理员审批后登录。', 'success'); return; }
       if (this.closed) return; await this.client.sync(); this.overlay = null; this.overlayKind = null;
-      this.notify('已登录。用 /chat 用户名 开始聊天；/chats 查看会话。', 'success');
+      this.notify('已登录。用 /chat 用户名 开始聊天；/chats 查看会话。' + (this.client.loginNotice ? ' ' + safeText(this.client.loginNotice) : ''), 'success');
     } finally { password = ''; repeat = ''; applicationMessage = ''; }
   }
   async changePassword() {
@@ -191,6 +220,25 @@ export class ChatApplication {
       this.overlay = null; this.notify(result.message || '恢复完成，请重新登录并核对安全码。', 'success');
     } finally { recoveryCode = ''; password = ''; repeat = ''; }
   }
+  clearSendPreview() {
+    if (!this.sendPreview) return;
+    this.sendPreview.text = ''; this.sendPreview = null; this.chatCache = null; this.transcript.cache = null;
+  }
+  async sendText(text) {
+    this.overlay = null; this.overlayKind = null; this.notify('发送中…', 'accent'); this.render();
+    const scope = this.scope();
+    try {
+      await this.client.send(text, { onPending: ({ id, expiresAt }) => {
+        if (this.closed || this.scope() !== scope || !this.client.user || !Number.isFinite(expiresAt) || expiresAt <= Date.now()) return;
+        this.sendPreview = { id, expiresAt, createdAt: Date.now(), text: safeText(text), scope, status: '发送中…' };
+        this.chatCache = null; this.render();
+      } });
+      if (this.sendPreview) { this.sendPreview.status = '已发送，正在同步'; this.chatCache = null; }
+      this.notify('已发送。消息在本机加密后上传。', 'success'); this.render();
+      await this.synchronize();
+    } catch (error) { this.clearSendPreview(); throw error; }
+    finally { text = ''; }
+  }
   async execute(line, literal = false) {
     this.busy = true; this.ui.busy = true;
     try {
@@ -204,11 +252,10 @@ export class ChatApplication {
         await this.client.chat(chosen.peer.username); this.overlay = null; this.overlayKind = null; return;
       }
       if (!isCommand) {
-        this.overlay = null; this.overlayKind = null; await this.client.send(text);
-        this.notify('已发送。消息在本机加密后上传。', 'success'); this.ui.scroll = 0; this.ui.anchor = null; await this.synchronize(); return;
+        await this.sendText(text); return;
       }
       const space = trimmed.search(/\s/), command = (space === -1 ? trimmed : trimmed.slice(0, space)).toLowerCase(), argument = space === -1 ? '' : trimmed.slice(space).trim();
-      if (['/login', '/register', '/passwd', '/recover', '/logout', '/help', '/chats', '/safety', '/clear', '/refresh', '/web', '/quit'].includes(command) && argument) throw new Error('此命令不接受参数；账号和密码请在交互提示中输入。');
+      if (['/login', '/register', '/passwd', '/recover', '/me', '/devices', '/privacy', '/logout', '/help', '/chats', '/safety', '/clear', '/refresh', '/web', '/quit'].includes(command) && argument) throw new Error('此命令不接受参数；账号和密码请在交互提示中输入。');
       const recalled = historyCommand(command, argument);
       if (recalled) this.ui.rememberCommand(recalled);
       switch (command) {
@@ -216,6 +263,16 @@ export class ChatApplication {
         case '/register': await this.authenticate(true); break;
         case '/passwd': await this.changePassword(); break;
         case '/recover': await this.recover(); break;
+        case '/me': {
+          this.client.requireUser(); const payload = await this.client.request('/api/account/sessions');
+          this.showOutput('/me', [...accountLines({ user: this.client.user, server: this.client.server, version: CLIENT_VERSION, sessions: payload?.sessions }),
+            `持续登录    ${this.client.persistentLogin ? '本机受保护存储；/quit 保留，/logout 清理并撤销' : '本次终端会话；退出后需重新登录'}`], 'account');
+          this.notice = '我的信息已追加，仅自己可见。'; break;
+        }
+        case '/devices':
+          this.client.requireUser(); this.showOutput('/devices', deviceLines(await this.client.request('/api/account/sessions')), 'account');
+          this.notice = '设备记录已追加；滚轮 / PgUp / PgDn 翻阅。'; break;
+        case '/privacy': this.showOutput('/privacy', PRIVACY_LINES, 'account'); this.notice = '隐私与边界已追加，仅自己可见。'; break;
         case '/help': this.showOutput('/help', HELP, 'help'); this.notice = '帮助已追加；向上翻仍可查看聊天，直接输入可继续发送。'; break;
         case '/chat':
           await this.client.chat(argument); this.overlay = null; this.overlayKind = null; this.ui.scroll = 0;
@@ -253,16 +310,26 @@ export class ChatApplication {
           if (await this.confirm('清空当前双方已有消息？不会删除确认期间新收到的消息。')) { await this.client.clear(id, through); await this.synchronize(); this.notice = '已清空；无法删除截图、录屏或外部副本。'; }
           else this.notice = '清空已取消。'; break;
         }
-        case '/refresh':
-          if (this.client.user) await this.synchronize(); else await this.client.health();
-          this.notice = this.client.connected ? '已重新同步。' : this.notice; break;
+        case '/refresh': {
+          let restored = false;
+          if (this.client.user) await this.synchronize();
+          else {
+            await this.client.health();
+            restored = Boolean(this.client.restoreSavedLogin && await this.client.restoreSavedLogin());
+            if (restored) await this.synchronize();
+          }
+          if (this.client.connected) this.notice = (restored ? '已恢复本机受保护登录并重新同步。' : '已重新同步。') + (this.client.loginNotice ? ' ' + safeText(this.client.loginNotice) : '');
+          break;
+        }
         case '/web': this.showOutput('/web', ['网页入口', '', this.client.server, '', '请自行在浏览器打开，使用相同账号登录。', 'CLI 不会自动打开附件、写入图片文件或领取阅后图片。'], 'web'); break;
-        case '/server':
+        case '/server': {
           if (this.client.user) throw new Error('切换服务前先 /logout。');
-          this.client.server = normalizeServer(argument); this.client.cookie = ''; this.client.connected = false;
+          const nextServer = normalizeServer(argument);
+          await this.client.logout(); this.client.server = nextServer; this.client.cookie = ''; this.client.connected = false;
           await this.client.health(); this.notice = '服务已切换；请确认地址可信，再登录。'; break;
+        }
         case '/logout':
-          await this.client.logout(); this.overlay = null; this.overlayKind = null; this.notice = '已退出账号并清理本机解锁密钥；网页服务仍运行。'; break;
+          this.clearSendPreview(); await this.client.logout(); this.overlay = null; this.overlayKind = null; this.notice = '已退出账号并清理本机解锁密钥；网页服务仍运行。'; break;
         case '/quit': void this.close(); break;
         default: throw new Error('未知命令。输入 /help；发送 / 开头的文字请用 //。');
       }
@@ -271,10 +338,11 @@ export class ChatApplication {
     } finally { line = ''; this.busy = false; this.ui.busy = false; this.nextPoll = Date.now() + (this.client.pollIntervalMs || 2000); this.render(); }
   }
   async close() {
-    if (this.closed) return; this.closed = true; clearInterval(this.interval); this.chatCache = null; this.transcript.clear(); this.ui.stop();
-    // Wait for an in-flight login before revoking its newly issued session.
+    if (this.closed) return; this.closed = true; clearInterval(this.interval); this.clearSendPreview(); this.chatCache = null; this.transcript.clear(); this.ui.stop();
+    // Finish any in-flight restore or login before clearing unlocked memory.
+    if (this.startup) await this.startup.catch(() => {});
     if (this.syncing) await this.syncing.catch(() => {});
     if (this.operation) await this.operation.catch(() => {});
-    await this.client.logout().catch(() => {}); this.resolveDone();
+    await (this.client.suspend ? this.client.suspend() : this.client.logout()).catch(() => {}); this.resolveDone();
   }
 }

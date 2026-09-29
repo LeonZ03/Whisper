@@ -1,6 +1,6 @@
 {
   "name": "whisper-local",
-  "version": "0.5.5",
+  "version": "0.5.6",
   "private": true,
   "type": "module",
   "engines": {
@@ -14,10 +14,10 @@
     "test:android:package": "node --test tests/android-package.test.mjs",
     "start": "node --no-warnings scripts/launch.mjs",
     "start:local": "node --no-warnings scripts/launch.mjs --local-only",
-    "test": "node --test tests/crypto.test.mjs tests/server.test.mjs tests/account.test.mjs tests/account-flow.test.mjs tests/cli.test.mjs tests/cli-history.test.mjs tests/cli-color.test.mjs tests/cli-interaction.test.mjs",
+    "test": "node --test tests/crypto.test.mjs tests/server.test.mjs tests/account.test.mjs tests/account-flow.test.mjs tests/cli.test.mjs tests/cli-history.test.mjs tests/cli-color.test.mjs tests/cli-interaction.test.mjs tests/cli-account-ui.test.mjs tests/login-store.test.mjs",
     "test:e2e": "playwright test",
     "cli": "node --no-warnings cli/index.mjs",
-    "test:cli": "node --test tests/cli.test.mjs tests/cli-history.test.mjs tests/cli-color.test.mjs tests/cli-interaction.test.mjs",
+    "test:cli": "node --test tests/cli.test.mjs tests/cli-history.test.mjs tests/cli-color.test.mjs tests/cli-interaction.test.mjs tests/cli-account-ui.test.mjs tests/login-store.test.mjs",
     "test:cli:tty": "node --test --test-force-exit tests/cli-tty.test.mjs",
     "build:cli": "node scripts/build-cli.mjs",
     "test:cli:package": "node scripts/test-cli-package.mjs",

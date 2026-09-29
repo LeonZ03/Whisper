@@ -12,10 +12,21 @@
 - Run npm test and npm run test:e2e after changes; browser tests use isolated temporary databases and Edge.
 - Document protocol limitations and breaking database changes in README.md.
 
+## 三端功能同步（所有者要求，2026-09-29）
+
+- App、网页版和 CLI 共用一套产品行为。涉及账号、设备记录、消息生命周期、发送反馈、版本和服务信息的需求，必须同时检查三端；不能默认只改当前正在操作的一端。
+- 开工时列出三端的现状、缺项和平台差异；实现与验收分别标明每端结果。版本号相同、共用后端或某端已经写入元数据，不代表另外两端已经具备可用的查看入口与交互。
+- 同一账号的设备记录统一复用现有认证 API：提供当前设备标识和最近十次成功登录，包含方式、登录状态、登录 / 结束时间、最近连接 IP 与估计地区；按登录时间保留至多十条，退出后仍可查看，和八个有效会话上限分别处理。图形界面可滚动，CLI 使用现有可翻阅的终端记录；root 原有审计不受十条上限影响。
+- 账号、修改密码、设备、服务、版本和隐私信息在三端应有对应入口，按平台适配布局和命令。CLI 信息输出继续追加到当前会话，不覆盖聊天、不发送给联系人；文本先净化再配色，保留草稿、阅读位置和到期清理。
+- 持久登录、显式退出及服务端撤销的目标体验需同步评估；必须使用各平台适合的受保护存储并说明实际支持范围。Android Keystore 例外不授权网页或 CLI 明文保存私钥、密码、authKey 或 cookie，不可仅为免登录降低现有保护。
+- 所有者确认三端同步后，0.5.6 允许网页在同源 IndexedDB 保存不可导出的 WebCrypto AES-GCM 密钥及身份密文（cookie 仍由浏览器 HttpOnly 管理），Windows CLI 仅保存 DPAPI CurrentUser 保护的 cookie 与身份密文。不得保存密码、authKey、聊天正文或原始私钥；不得明文降级。保护不可用时提示临时登录；正常关页 / 退出程序保留密文，显式退出、改密或恢复、服务端撤销清除。浏览器配置文件与同一 Windows 用户下的恶意代码仍在保护边界之外。
+- App 与网页的图片压缩、三秒查看和先清除内容再消散的规则一致。CLI 保持不领取、不保存阅后图片，用网页入口提供等效引导；消息到期及时清理，视觉提示按终端能力适配，不能为动画延迟清除正文。Android 的系统截图限制属于平台差异，网页 / CLI 不承诺防截图。
+- 发布前检查三端版本、资源 / 安装包及受影响的回归测试；有意分阶段发布或保留平台差异时，在交付中明确说明，不能把某一端完成描述为三端全部完成。当前上线状态仍记录在 cloud/DEPLOYMENT.md。
+
 ## CLI maintenance
 
 - CLI must reuse src/crypto.mjs and the existing API; no protocol downgrade or server auth bypass.
-- Keep passwords, decrypted messages, private keys and cookies out of CLI arguments, history and files.
+- Keep passwords, decrypted messages, private keys and cookies out of CLI arguments and history. Files may contain only the explicitly approved DPAPI sealed login described above; never plaintext credentials or messages.
 - CLI public-key pins are private metadata in ignored data/; never silently reset them.
 - Treat terminal messages as untrusted text: strip VT/OSC/control sequences; never execute message text.
 - Apply color only after sanitizing/wrapping, using trusted UI metadata; message text must not choose UI roles. Keep NO_COLOR/--no-color usable and preserve history anchors.
@@ -52,7 +63,7 @@
 
 ## Cloud deployment and operations
 
-- Owner-approved Android persistent login (2026-09-29) may retain only a device-bound Android Keystore AES-GCM encrypted session cookie and identity private key. Never persist original passwords, authKey, plaintext login files or messages. Backgrounding clears displayed content, explicit logout clears this vault, and server revocation remains enforced. This exception does not change web or CLI storage rules.
+- Owner-approved Android persistent login (2026-09-29) may retain only a device-bound Android Keystore AES-GCM encrypted session cookie and identity private key. Never persist original passwords, authKey, plaintext login files or messages. Backgrounding clears displayed content, explicit logout clears this vault, and server revocation remains enforced. Web and CLI use only the separate approved protections documented in the three-client section above.
 
 - The owner approved `whisper.leonz03.dpdns.org`. Do not touch BeiPiao, the root hostname or other subdomains.
 - Cloud entry is `cloud/worker.mjs`; local entry remains `server/app.mjs`. Do not run the local launcher inside Workers.

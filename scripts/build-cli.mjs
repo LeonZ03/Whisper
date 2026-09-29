@@ -51,7 +51,7 @@ function copyDependency(name) {
 }
 try {
   // Deliberate allowlist. Never copy the project, data/, server/, tests/ or devDependencies.
-  for (const name of ['application.mjs', 'client.mjs', 'index.mjs', 'terminal.mjs', 'theme.mjs', 'transcript.mjs']) safeCopy(join(root, 'cli', name), join(destination, 'cli', name));
+  for (const name of ['application.mjs', 'client.mjs', 'index.mjs', 'terminal.mjs', 'theme.mjs', 'transcript.mjs', 'account-ui.mjs', 'login-store.mjs']) safeCopy(join(root, 'cli', name), join(destination, 'cli', name));
   safeCopy(join(root, 'src/crypto.mjs'), join(destination, 'src/crypto.mjs'));
   safeCopy(join(root, 'src/account-client.mjs'), join(destination, 'src/account-client.mjs'));
   for (const name of ['whisper.cmd', 'README.txt', 'uninstall.ps1']) safeCopy(join(root, 'client-distribution', name), join(destination, name));

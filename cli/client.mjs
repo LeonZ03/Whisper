@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync, mkdirSync, renameSync, unlinkSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { ready, b64, wipe, deriveCredentials, unlockIdentity, encryptMessage, decryptMessage, safetyCode } from '../src/crypto.mjs';
+import { ready, b64, unb64, wipe, deriveCredentials, unlockIdentity, encryptMessage, decryptMessage, safetyCode } from '../src/crypto.mjs';
 import { prepareEnrollment, preparePasswordChange } from '../src/account-client.mjs';
 
 export const TTL = Object.freeze({ '1m': 60000, '1h': 3600000, '24h': 86400000, '7d': 604800000 });
@@ -57,14 +57,16 @@ export class PinStore {
   }
 }
 export class WhisperClient {
-  constructor({ server, pinPath, fetchImpl = globalThis.fetch, timeoutMs = 10000 }) {
+  constructor({ server, pinPath, loginStore, fetchImpl = globalThis.fetch, timeoutMs = 10000 }) {
     this.server = normalizeServer(server); this.pins = new PinStore(pinPath);
     this.fetchImpl = fetchImpl; this.timeoutMs = timeoutMs; this.cookie = '';
     this.user = null; this.selected = null; this.conversations = []; this.messages = [];
+    this.loginStore = loginStore; this.persistentLogin = false; this.loginNotice = ''; this.loginEpoch = 0;
     this.pollIntervalMs = 2000; this.ttl = '24h'; this.connected = false; this.supportsHistory = false; this.hasOlder = false; this.historyComplete = false;
   }
   async request(path, method = 'GET', body, timeoutMs = this.timeoutMs) {
     if (!path.startsWith('/api/')) throw new Error('无效的 API 路径。');
+    const epoch = this.loginEpoch;
     let response;
     try {
       response = await this.fetchImpl(this.server + path, {
@@ -77,10 +79,12 @@ export class WhisperClient {
     if (!result) throw new Error('服务器返回了无效 JSON；请确认是 Whisper 服务。');
     if (!response.ok) {
       const error = new Error(typeof result.error === 'string' ? result.error : `请求失败 (${response.status})`);
-      error.status = response.status; if (response.status === 401) this.lock(); throw error;
+      error.status = response.status;
+      if (response.status === 401 && epoch === this.loginEpoch) { this.lock(); await this.loginStore?.clear(this.server); }
+      throw error;
     }
     const session = response.headers.get('set-cookie')?.match(/(?:^|,\s*)whisper_session=([A-Za-z0-9_-]{43})(?:;|$)/);
-    if (session) this.cookie = `whisper_session=${session[1]}`;
+    if (session && epoch === this.loginEpoch) this.cookie = `whisper_session=${session[1]}`;
     this.connected = true; return result;
   }
   async health() {
@@ -95,7 +99,9 @@ export class WhisperClient {
     username = usernameOf(username);
     if (!password || password.length > 1024) throw new Error('请输入密码（最长 1024 字符）。');
     if (username === 'root') throw new Error('root 管理员请使用网页入口登录；CLI 不提供管理员会话。');
-    await ready; await this.health(); let credentials, identity, secretKey;
+    const epoch = ++this.loginEpoch;
+    const current = () => { if (epoch !== this.loginEpoch) throw Error('登录已取消。'); };
+    await ready; await this.health(); current(); let credentials, identity, secretKey;
     try {
       if (register) {
         const enrollment = await prepareEnrollment(password, applicationMessage);
@@ -104,17 +110,23 @@ export class WhisperClient {
         if (result.pending !== true) throw new Error('服务器未确认待审批申请。');
         return result;
       }
-      const salt = (await this.request('/api/auth/salt?username=' + encodeURIComponent(username))).salt;
-      credentials = await deriveCredentials(password, salt); password = ''; let user;
-      user = await this.request('/api/auth/login', 'POST', { username, authKey: b64(credentials.authKey) });
+      this.persistentLogin = await this.loginStore?.available() === true; current();
+      this.loginNotice = this.persistentLogin ? '' : '当前环境无法保护保存登录，关闭 CLI 后需要重新登录。';
+      const salt = (await this.request('/api/auth/salt?username=' + encodeURIComponent(username))).salt; current();
+      credentials = await deriveCredentials(password, salt); password = ''; current(); let user;
+      user = await this.request('/api/auth/login', 'POST', { username, authKey: b64(credentials.authKey), persistent: this.persistentLogin }); current();
       if (user.role !== 'member' || user.username === 'root') throw new Error('管理员会话只能在网页使用。');
       secretKey = unlockIdentity(user, credentials.vaultKey);
       if (!this.cookie) throw new Error('服务器没有返回登录会话。');
+      if (this.persistentLogin) {
+        const saved = await this.loginStore.save(this.server, { id: user.id, username: user.username, publicKey: user.publicKey, secretKey: b64(secretKey), cookie: this.cookie });
+        current(); if (!saved) throw Error('登录保存已取消。');
+      }
       this.user = { id: user.id, username: user.username, publicKey: user.publicKey, secretKey };
     } catch (error) {
       wipe(identity?.secretKey); wipe(secretKey);
-      if (this.cookie) await this.request('/api/auth/logout', 'POST', {}, 1500).catch(() => {});
-      this.lock(); throw error;
+      if (epoch === this.loginEpoch) await this.logout().catch(() => {});
+      throw error;
     } finally { password = ''; wipe(credentials?.authKey); wipe(credentials?.vaultKey); }
   }
   async changePassword(currentPassword, newPassword) {
@@ -123,14 +135,15 @@ export class WhisperClient {
     if (me.id !== this.user.id || me.publicKey !== this.user.publicKey) throw new Error('账号身份已改变，请重新登录。');
     const envelope = await preparePasswordChange(me, currentPassword, newPassword);
     try { return await this.request('/api/account/password', 'POST', envelope); }
-    finally { this.lock(); }
+    finally { this.lock(); await this.loginStore?.clear(this.server); }
   }
   async recover({ username, recoveryCode, password }) {
     if (this.user) throw new Error('请先 /logout。');
     username = usernameOf(username);
     if (username === 'root') throw new Error('root 请使用所有者恢复工具。');
     const enrollment = await prepareEnrollment(password);
-    return this.request('/api/auth/recover', 'POST', { username, recoveryCode, ...enrollment });
+    const result = await this.request('/api/auth/recover', 'POST', { username, recoveryCode, ...enrollment });
+    await this.loginStore?.clear(this.server); return result;
   }
   requireUser() { if (!this.user) throw new Error('请先输入 /login 或 /register。'); }
   requireChat() { this.requireUser(); if (!this.selected) throw new Error('请先 /chat 对方用户名。'); }
@@ -185,13 +198,14 @@ export class WhisperClient {
     const conversation = await this.request('/api/conversations', 'POST', { username: usernameOf(username) });
     this.selected = conversation; this.messages = []; this.historyComplete = false; this.hasOlder = false; await this.sync(); return conversation;
   }
-  async send(text) {
+  async send(text, { onPending } = {}) {
     this.requireChat(); if (!text.trim()) return;
     if (Buffer.byteLength(text, 'utf8') > 16000) throw new Error('文字过长；单条最多 16,000 个 UTF-8 字节。');
     // Recheck peer identity before encryption, not only on background polling.
     await this.sync(); this.requireChat();
     if (this.trust().blocked) throw new Error('对方公钥变化，已阻止发送与解密。请通过可信渠道核实。');
     const envelope = encryptMessage(this.user, this.selected.peer, this.selected.id, text, { ttlMs: TTL[this.ttl] });
+    onPending?.({ id: envelope.id, expiresAt: envelope.expiresAt });
     try { await this.request(`/api/conversations/${this.selected.id}/messages`, 'POST', envelope); }
     catch (error) { if (!error.status) error.message = '发送结果未知：请先 /refresh 核对，勿立即重发以免重复。'; throw error; }
     return envelope.id;
@@ -224,6 +238,42 @@ export class WhisperClient {
     this.requireChat(); if (this.selected.id !== conversationId) throw new Error('会话已切换，取消清空。');
     await this.request(`/api/conversations/${conversationId}/clear`, 'POST', { throughSeq });
   }
-  lock() { wipe(this.user?.secretKey); this.user = null; this.cookie = ''; this.selected = null; this.conversations = []; this.messages = []; this.hasOlder = false; this.historyComplete = false; }
-  async logout() { try { if (this.cookie) await this.request('/api/auth/logout', 'POST', {}, 1500); } finally { this.lock(); } }
+  async restoreSavedLogin() {
+    if (!this.loginStore || this.user) return false;
+    const epoch = ++this.loginEpoch; let saved, key;
+    // Even an offline first launch must not erase an existing vault on /quit.
+    this.persistentLogin = true;
+    try { saved = await this.loginStore.load(this.server); }
+    catch { await this.loginStore.clear(this.server); this.loginNotice = '保存的登录无法解锁，请重新 /login。'; return false; }
+    if (!saved || epoch !== this.loginEpoch) { if (!saved) this.persistentLogin = false; return false; }
+    try {
+      await ready;
+      if (typeof saved.id !== 'string' || typeof saved.publicKey !== 'string' || typeof saved.secretKey !== 'string' || !/^whisper_session=[A-Za-z0-9_-]{43}$/.test(saved.cookie)) throw Object.assign(Error('保存的身份无效。'), { status: 401 });
+      key = unb64(saved.secretKey); if (key.length !== 32) throw Object.assign(Error('保存的身份无效。'), { status: 401 });
+      if (epoch !== this.loginEpoch) return false;
+      this.cookie = saved.cookie;
+      const me = await this.request('/api/account/me');
+      if (epoch !== this.loginEpoch) return false;
+      if (me.id !== saved.id || me.publicKey !== saved.publicKey || me.role !== 'member' || me.mustChangePassword) throw Object.assign(Error('账号身份已变化。'), { status: 401 });
+      this.user = { id: me.id, username: me.username, publicKey: me.publicKey, secretKey: key }; key = null;
+      this.persistentLogin = true; this.loginNotice = ''; return true;
+    } catch (error) {
+      if (epoch !== this.loginEpoch) return false;
+      this.lock();
+      if ([401, 403].includes(error.status)) { await this.loginStore.clear(this.server); this.loginNotice = '登录已失效，请重新 /login。'; return false; }
+      throw error;
+    } finally { wipe(key); saved = null; }
+  }
+  lock() { this.loginEpoch++; wipe(this.user?.secretKey); this.user = null; this.cookie = ''; this.selected = null; this.conversations = []; this.messages = []; this.hasOlder = false; this.historyComplete = false; }
+  async suspend() { if (this.persistentLogin || (!this.cookie && this.loginStore)) this.lock(); else await this.logout(); }
+  async logout() {
+    const origin = this.server, cookie = this.cookie;
+    this.lock(); this.persistentLogin = false;
+    // Clear local recovery immediately, even when the service is unreachable.
+    const cleared = this.loginStore?.clear(origin);
+    try {
+      if (cookie) await this.fetchImpl(origin + '/api/auth/logout', { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(1500),
+        headers: { Cookie: cookie, Origin: origin, 'Content-Type': 'application/json', 'X-Whisper-Request': '1' }, body: '{}' });
+    } finally { await cleared; }
+  }
 }

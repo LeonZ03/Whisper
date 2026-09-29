@@ -16,6 +16,7 @@ export async function requestAPI(path, method = 'GET', body) {
   const result = await response.json().catch(() => ({ error: '服务器返回了无效响应。' }));
   if (!response.ok) {
     if (response.status === 401 && !path.startsWith('/api/auth/')) globalThis.whisperAndroidSessionRevoked?.();
+    if (response.status === 401 && !path.startsWith('/api/auth/')) globalThis.whisperWebSessionRevoked?.();
     const error = new Error(result.error || '请求失败。'); error.status = response.status; throw error;
   }
   return result;

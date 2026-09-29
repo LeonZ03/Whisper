@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync, readFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync, readFileSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -22,6 +22,98 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 test('CLI rejects redirected input; help still works', () => {
   assert.match(execFileSync(clientNode, [clientEntry, '--help'], { encoding: 'utf8', cwd: clientRoot }), /Whisper CLI/);
   assert.throws(() => execFileSync(clientNode, [clientEntry], { encoding: 'utf8', stdio: 'pipe', cwd: clientRoot }), (error) => { assert.match(error.stderr, /真实交互终端/); return true; });
+});
+test('PowerShell + ConPTY: private account commands, DPAPI login survives quit, explicit logout prevents restore', { skip: process.platform !== 'win32', timeout: 60000 }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'whisper-cli-account-tty-'));
+  const dataDir = join(dir, 'client'), app = await createWhisperServer({ dataDir: join(dir, 'db'), port: 0 });
+  const alice = new WhisperClient({ server: app.localUrl }), bob = new WhisperClient({ server: app.localUrl });
+  const password = 'TtyKeep2026', username = 'alice_account_tty', peer = 'bobby_account_tty', windows = [];
+  const shell = join(process.env.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+  const open = () => {
+    const terminal = new headless.Terminal({ cols: 110, rows: 34, allowProposedApi: true });
+    const returnPath = join(dir, `account-shell-returned-${windows.length}.txt`);
+    const child = pty.spawn(shell, ['-NoLogo', '-NoProfile', '-Command', `& '${launcher}' --server '${app.localUrl}' --color; [IO.File]::WriteAllText('${returnPath.replaceAll("'", "''")}', [string]$LASTEXITCODE); Write-Output 'ACCOUNT_TTY_RETURNED_TO_POWERSHELL'`], {
+      cwd: clientRoot, name: 'xterm-256color', cols: 110, rows: 34,
+      env: { ...process.env, WHISPER_CLI_DATA_DIR: dataDir }, useConpty: true,
+    });
+    const window = { child, terminal, raw: '', exited: false, exitCode: null };
+    windows.push(window);
+    child.onData(data => { window.raw += data; terminal.write(data); });
+    child.onExit(event => { window.exited = true; window.exitCode = event.exitCode; });
+    window.screen = () => Array.from({ length: terminal.rows }, (_, i) => terminal.buffer.active.getLine(terminal.buffer.active.viewportY + i)?.translateToString(true) || '').join('\n');
+    window.waitFor = async (predicate, label, timeout = 15000) => {
+      const end = Date.now() + timeout;
+      while (Date.now() < end) { if (predicate()) return; await sleep(100); }
+      throw new Error('Account TTY timeout: ' + label + '\n' + window.screen().replaceAll(password, '[redacted]'));
+    };
+    window.visible = text => window.waitFor(() => window.screen().includes(text), text);
+    window.enter = text => child.write(text + '\r');
+    window.quit = async () => {
+      window.enter('/quit'); await window.waitFor(() => existsSync(returnPath), 'PowerShell continuation');
+      assert.equal(readFileSync(returnPath, 'utf8'), '0'); await window.waitFor(() => window.exited, 'clean CLI exit');
+      assert.equal(window.raw.includes(password), false, 'masked password must never echo');
+    };
+    return window;
+  };
+  let aliceId;
+  const loginCounts = () => ({
+    sessions: app.db.prepare('SELECT COUNT(*) AS n FROM sessions WHERE user_id=?').get(aliceId).n,
+    history: app.db.prepare('SELECT COUNT(*) AS n FROM login_history WHERE user_id=?').get(aliceId).n,
+  });
+  try {
+    // Enrollment and approval touch only these synthetic users in this temporary database.
+    for (const [client, name] of [[alice, username], [bob, peer]]) {
+      await client.authenticate({ username: name, password, register: true });
+      app.db.prepare("UPDATE users SET status='active' WHERE username=? AND status='pending'").run(name);
+    }
+    aliceId = app.db.prepare('SELECT id FROM users WHERE username=?').get(username).id;
+    await bob.authenticate({ username: peer, password }); await bob.chat(username);
+    await bob.send('账号命令保留的原聊天'); await bob.sync(); const messageIds = bob.messages.map(message => message.id);
+
+    const first = open(); await first.visible('服务已连接');
+    first.enter('/login'); await first.visible('用户名 ›'); first.enter(username); await first.visible('密码 ›');
+    first.child.write(password); await sleep(150); assert.equal(first.raw.includes(password), false);
+    first.enter(''); await first.visible('已登录。用 /chat');
+    assert.deepEqual(loginCounts(), { sessions: 1, history: 1 });
+    first.enter('/chat ' + peer); await first.visible('账号命令保留的原聊天');
+    for (const [command, result] of [['/me', '我的信息已追加'], ['/devices', '设备记录已追加'], ['/privacy', '隐私与边界已追加']]) {
+      first.enter(command); await first.visible(result); await first.visible('› ' + command + ' · 仅本机');
+      if (command === '/me') { await first.visible('本机受保护存储'); await first.visible('CLI / Windows'); }
+      if (command === '/devices') { await first.visible('最近 1 条'); await first.visible('最近连接 IP'); }
+      if (command === '/privacy') await first.visible('CLI 不领取或保存阅后图片');
+      await bob.sync(); assert.deepEqual(bob.messages.map(message => message.id), messageIds, 'local account output must not reach the peer');
+    }
+    const protectedFiles = readdirSync(dataDir).filter(name => name.endsWith('.dpapi'));
+    assert.equal(protectedFiles.length, 1, 'a real Windows terminal must save one protected login');
+    for (const file of readdirSync(dataDir)) {
+      const bytes = readFileSync(join(dataDir, file));
+      for (const forbidden of [password, '"secretKey"', 'whisper_session=']) assert.equal(bytes.includes(Buffer.from(forbidden)), false, 'client files must contain no plaintext login secrets');
+    }
+    await first.quit(); assert.deepEqual(loginCounts(), { sessions: 1, history: 1 });
+
+    const second = open(); await second.visible('已恢复本机受保护登录');
+    assert.ok(second.screen().includes('@' + username)); assert.deepEqual(loginCounts(), { sessions: 1, history: 1 });
+    second.enter('/chat ' + peer); await second.visible('账号命令保留的原聊天');
+    await bob.sync(); assert.deepEqual(bob.messages.map(message => message.id), messageIds);
+    second.enter('/logout'); await second.visible('已退出账号');
+    assert.deepEqual(loginCounts(), { sessions: 0, history: 1 });
+    assert.equal(app.db.prepare('SELECT end_reason FROM login_history WHERE user_id=?').get(aliceId).end_reason, 'logout');
+    assert.equal(readdirSync(dataDir).some(name => name.endsWith('.dpapi')), false);
+    await second.quit();
+
+    const third = open(); await third.visible('服务已连接。输入 /login 或 /register。');
+    assert.ok(third.screen().includes('未登录')); assert.ok(!third.screen().includes('@' + username));
+    assert.deepEqual(loginCounts(), { sessions: 0, history: 1 }); await third.quit();
+    assert.equal((await bob.health()).ok, true, 'quitting the CLI leaves its local server running');
+  } finally {
+    for (const window of windows) {
+      if (!window.exited) { try { window.child.kill(); } catch {} }
+      window.terminal.dispose();
+    }
+    await bob.logout().catch(() => {}); await alice.logout().catch(() => {}); await app.close();
+    assert.ok(resolve(dir).startsWith(resolve(tmpdir()) + '\\'), 'cleanup is restricted to the test temporary directory');
+    rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 300 });
+  }
 });
 test('PowerShell + ConPTY: register, masked secrets, live chat, Chinese, paste, delete, resize, exit', { skip: process.platform !== 'win32', timeout: 90000 }, async () => {
   const dir = mkdtempSync(join(tmpdir(), 'whisper-cli-tty-')), app = await createWhisperServer({ dataDir: join(dir, 'db'), port: 0 });

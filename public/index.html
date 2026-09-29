@@ -8,7 +8,8 @@
   <link rel="stylesheet" href="/style.css"><script type="module" src="/app.js"></script>
 </head>
 <body>
-  <section id="auth-screen" class="auth-shell">
+  <section id="web-startup" class="web-startup" role="status"><img src="/brand-mark.svg" alt=""><span>正在打开 Whisper…</span></section>
+  <section id="auth-screen" class="auth-shell" hidden>
     <aside class="intro">
       <a class="brand brand-light" href="/" aria-label="Whisper 首页"><span class="brand-mark" aria-hidden="true"></span> whisper<span class="edition">LOCAL</span></a>
       <div class="intro-copy"><span class="eyebrow">JUST BETWEEN US</span><h1>话，只说给<br>想说的人听。</h1><p>一个安静的双人聊天空间。<br>消息在浏览器里加密，也只在浏览器里解开。</p><div class="intro-rule"></div><div class="intro-features"><span>01 / 申请加入</span><span>02 / 双人会话</span><span>03 / 到期清理</span></div></div>
@@ -32,10 +33,17 @@
     </div><footer class="auth-footer">端到端加密原型 <span>·</span> 无群聊 <span>·</span> 无广告与第三方统计</footer></main>
   </section>
   <section id="chat-screen" class="workspace" hidden>
-    <header class="app-header"><a class="brand" href="/"><span class="brand-mark" aria-hidden="true"></span><span class="brand-label"><span>whisper</span><small class="app-version" data-app-version aria-label="网页版本"></small></span></a><span class="header-caption">私人会话</span><div class="header-right"><span id="connection" class="connection">正在连接</span><span id="self-name"></span><button id="account-settings" class="quiet" type="button">修改密码</button><button id="logout" class="quiet">退出</button></div></header>
+    <header class="app-header"><a class="brand" href="/" aria-label="Whisper 首页"><span class="brand-mark" aria-hidden="true"></span><span class="brand-label"><span class="sr-only">whisper</span><small class="app-version" data-app-version aria-label="网页版本"></small></span></a><span class="header-caption">私人会话</span><div class="header-right"><span id="connection" class="connection">正在连接</span><span id="self-name"></span></div></header>
+    <div class="web-layout">
+      <nav id="web-nav" class="web-nav" aria-label="网页主导航">
+        <button id="nav-conversations" class="web-nav-button" type="button" aria-current="page"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11.5a7.5 7.5 0 0 1-7.5 7.5 8 8 0 0 1-3.2-.7L4 20l1.3-4.2A7.5 7.5 0 1 1 20 11.5Z"/></svg><span>会话</span></button>
+        <button id="nav-my" class="web-nav-button" type="button" aria-current="false"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="3.5"/><path d="M5 20a7 7 0 0 1 14 0"/></svg><span>我的</span></button>
+        <div class="web-nav-bottom"><p>双人加密会话</p><a href="/cli.html">CLI 安装与使用 <span aria-hidden="true">↗</span></a></div>
+      </nav>
+      <div id="web-content" class="web-content">
     <div id="chat-body" class="app-body"><aside class="sidebar"><div class="sidebar-heading"><h2>会话</h2><span class="small-pill">仅双人</span></div>
       <form id="new-chat-form"><label class="sr-only" for="peer-name">对方用户名</label><div class="search"><span>@</span><input id="peer-name" placeholder="输入对方完整用户名" pattern="[a-z0-9_]{3,24}" required maxlength="24"><button title="开始会话" aria-label="开始会话" type="submit">＋</button></div></form>
-      <p class="sidebar-hint">只有知道用户名的人，才能找到彼此。</p><nav id="conversations" aria-label="会话列表"></nav><div class="sidebar-bottom"><span class="dot"></span><span id="entry-kind">本机入口</span><p>关闭页面会锁定本机密钥。<br>重新登录可恢复未到期消息。</p></div>
+      <p class="sidebar-hint">只有知道用户名的人，才能找到彼此。</p><nav id="conversations" aria-label="会话列表"></nav><div class="sidebar-bottom"><span class="dot"></span><span id="entry-kind">本机入口</span><p>关闭页面会清除当前解锁状态。<br>重新打开会先核验保存的登录。</p></div>
     </aside>
     <main class="chat-main"><div id="empty-state" class="empty-state"><div class="empty-icon" aria-hidden="true"></div><h2>从一句话开始</h2><p>让朋友申请账号，管理员批准后，<br>在左侧输入对方的用户名开启双人会话。</p><span class="muted-tag">同一台电脑测试：使用两个浏览器或无痕窗口</span></div>
       <section id="conversation-panel" class="conversation-panel" hidden>
@@ -46,14 +54,31 @@
         <p class="chat-footnote">删除和阅后清理无法阻止截图或另存。Enter 发送，Shift + Enter 换行。</p>
       </section>
     </main></div>
+    <section id="my-panel" class="web-my-panel" aria-labelledby="my-title" hidden>
+      <div class="web-my-content"><h1 id="my-title" tabindex="-1">我的</h1>
+        <div class="web-profile"><div id="my-avatar" class="web-profile-avatar" aria-hidden="true"></div><div><strong id="my-name"></strong><p id="my-role"></p></div></div>
+        <section class="web-settings-section"><h2>账号</h2><button id="account-settings" class="web-setting-row" type="button"><span>修改密码</span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg></button></section>
+        <section class="web-settings-section" aria-labelledby="account-sessions-title"><h2 id="account-sessions-title">已登录设备</h2><button id="account-devices-open" class="web-setting-row web-device-summary" type="button" aria-label="查看设备登录记录"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 3h20v14H2z M8 21h8 M12 17v4"/></svg><strong id="current-device-name">当前设备</strong><span class="session-current">本机</span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg></button></section>
+        <section class="web-settings-section"><h2>服务</h2><div class="web-setting-row web-setting-plain"><span>当前服务</span><span class="web-setting-detail"><span id="my-service-kind">当前服务</span><small id="my-service-host"></small></span></div></section>
+        <section class="web-settings-section"><h2>关于</h2><div class="web-setting-row web-setting-plain"><span>网页版本</span><span id="my-web-version" class="web-setting-detail app-version"></span></div><button id="privacy-button" class="web-setting-row web-setting-plain" type="button" aria-haspopup="dialog"><span>隐私与边界</span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg></button><a class="web-setting-row web-setting-plain web-cli-link" href="/cli.html"><span>CLI 安装与使用</span><span aria-hidden="true">↗</span></a></section>
+        <button id="logout" class="web-logout" type="button">退出登录</button>
+      </div>
+    </section>
+    <section id="device-history-panel" class="web-device-history" aria-labelledby="device-history-title" hidden>
+      <header class="web-history-header"><div class="web-history-title"><button id="device-history-back" class="web-back" type="button" aria-label="返回我的"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14 6-6 6 6 6M8 12h12"/></svg></button><h1 id="device-history-title" tabindex="-1">设备登录记录</h1></div><p>最近 10 条登录记录 · 新记录自动替换最旧一条</p></header>
+      <div id="device-history-scroll" class="web-history-scroll" tabindex="0" aria-label="最近十条登录记录，可上下滚动"><div id="device-history-list" aria-live="polite"></div><p class="session-footnote">IP 地区为估计位置，可能显示代理出口。已登录不代表设备正在在线。</p></div>
+    </section>
     <section id="admin-panel" class="admin-panel" hidden><div class="admin-heading"><div><h2>账号管理</h2><p>root 仅用于审批和维护，不参与成员聊天。验证消息可读；消息正文仍为端到端密文。</p></div><button id="admin-refresh" class="quiet" type="button">刷新成员</button></div><div id="member-list" class="member-list"></div><button id="member-more" class="quiet" type="button" hidden>加载更多成员</button><div class="admin-heading"><div><h2>root 登录记录</h2><p>仅记录功能启用后到达应用并被处理的尝试。时间为中国标准时间，位置为 IP 估计。</p></div><button id="log-refresh" class="quiet" type="button">刷新记录</button></div><div class="audit-scroll"><table><thead><tr><th>时间（中国标准时间）</th><th>结果</th><th>IP</th><th>估计位置</th></tr></thead><tbody id="login-records"></tbody></table></div><button id="log-more" class="quiet" type="button" hidden>加载更多记录</button></section>
+      </div>
+    </div>
   </section>
   <input id="image-input" type="file" accept="image/png,image/jpeg,image/webp,image/gif" hidden>
   <div id="toast" role="status" hidden></div>
   <dialog id="safety-dialog"><div class="dialog-head"><h2>核对安全码</h2><button id="close-safety" class="quiet" aria-label="关闭安全码">✕</button></div><p id="safety-explanation">当面或通过另一个可信渠道，与对方比较下面的完整安全码。两边必须一致。</p><code id="safety-code"></code><p class="field-help">“已核对”只保存在当前浏览器、当前网址。换入口后需要重新核对。</p><button id="mark-verified" class="primary wide">已经与对方核对，一致</button></dialog>
   <dialog id="password-dialog"><div class="dialog-head"><h2>修改密码</h2><button id="password-close" class="quiet" type="button">关闭</button></div><p id="password-explanation"></p><form id="password-form"><label for="old-password">当前密码</label><input id="old-password" type="password" autocomplete="current-password" required><label for="new-password">新密码</label><input id="new-password" type="password" autocomplete="new-password" required><label for="repeat-password">再次输入新密码</label><input id="repeat-password" type="password" autocomplete="new-password" required><p class="weak-password-note">新密码为 1–12 个 Unicode 字符。1 字符密码容易被猜中。</p><p id="password-error" class="error" role="alert"></p><button id="password-submit" class="primary wide" type="submit">修改并重新登录</button></form></dialog>
+  <dialog id="privacy-dialog" aria-labelledby="privacy-title"><div class="dialog-head"><h2 id="privacy-title">隐私与边界</h2><button id="privacy-close" class="quiet" type="button">关闭</button></div><div class="web-privacy-copy"><p>Whisper 是未经安全审计的双人加密聊天原型。聊天正文在设备上加密；服务及转发服务仍可能看到 IP、时间、通信关系与设备登录记录。验证消息可由管理员和服务器读取。</p><p>设备记录仅当前账号可查看，最多保留最近十次成功登录。IP 地区是网络估计，可能显示代理出口；已登录不代表设备正在在线。</p><p>支持受保护存储时，此浏览器会保存加密后的身份，重新打开会先向服务核验登录。此保护不等于硬件隔离，也不能防止已控制本页面的恶意脚本。浏览器存储不可用时需要重新登录。</p><p>网页关闭后会清除当前解锁状态。不会持久保存明文私钥、密码、认证密钥或聊天正文。退出会撤销当前会话，并清除本浏览器保存的登录状态。</p><p>消息到期和阅后图片清理不能阻止截图、另存或其他设备拍照，不承诺远端安全擦除、完全匿名或前向保密。</p><a href="/cli.html">CLI 安装与使用 <span aria-hidden="true">↗</span></a></div></dialog>
   <dialog id="member-action-dialog"><div class="dialog-head"><h2 id="member-action-title">确认操作</h2><button id="member-action-close" class="quiet" type="button">关闭</button></div><p id="member-action-description"></p><form id="member-action-form"><label for="member-confirm-name">输入目标用户名以确认</label><input id="member-confirm-name" autocomplete="off" required><label for="admin-password">再次输入 root 当前密码</label><input id="admin-password" type="password" autocomplete="current-password" required><p id="member-action-error" class="error" role="alert"></p><button id="member-action-submit" class="primary wide" type="submit">确认执行</button></form></dialog>
   <dialog id="recovery-result-dialog"><div class="dialog-head"><h2>一次性成员恢复码</h2><button id="recovery-result-close" class="quiet" type="button">关闭</button></div><p>只显示这一次。请通过私下渠道交给成员；成员自行设置新密码和新身份。旧聊天无法恢复。</p><textarea id="recovery-result" rows="2" readonly></textarea></dialog>
   <dialog id="image-dialog" class="image-dialog"><div class="dialog-head"><div><h2>仅此一次</h2><p id="image-countdown">3 秒后关闭</p></div><button id="close-image" class="quiet">立即关闭</button></div><img id="view-image" alt="阅后图片"><p class="field-help">切换标签页也会关闭；无法阻止对方截图或另存。</p></dialog>
-  <noscript>Whisper 需要 JavaScript 才能在浏览器中加密和解密消息。</noscript>
+  <noscript><style>#web-startup{display:none}</style>Whisper 需要 JavaScript 才能在浏览器中加密和解密消息。</noscript>
 </body></html>

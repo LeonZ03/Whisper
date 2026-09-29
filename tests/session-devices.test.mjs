@@ -8,7 +8,7 @@ import { randomBytes, randomUUID, createHash } from 'node:crypto';
 import { createWhisperServer } from '../server/app.mjs';
 import { localStore } from '../accounts/local-store.mjs';
 import { cloudFixture } from './cloud-fixture.mjs';
-import { APP_SESSION_EXPIRES_AT, sessionDevice } from '../accounts/session-devices.mjs';
+import { APP_SESSION_EXPIRES_AT, APP_COOKIE_MAX_AGE, sessionDevice } from '../accounts/session-devices.mjs';
 
 const random = n => randomBytes(n).toString('base64');
 const envelope = username => ({ username, passwordLength: 8, authKey: random(32), publicKey: random(32), salt: random(16), vault: { nonce: random(24), ciphertext: random(48) } });
@@ -181,6 +181,80 @@ test('local login history retains only the latest ten successful logins after lo
   const app = await createWhisperServer({ port: 0, dataDir: dir });
   try { await historyExercise({ url: app.localUrl, db: localStore(app.db) }); }
   finally { await app.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+async function persistenceExercise(f) {
+  const request = async (path, method = 'GET', body, cookie) => {
+    const response = await fetch(f.url + path, { method, headers: {
+      ...(method === 'GET' ? {} : { Origin: f.url, 'Content-Type': 'application/json', 'X-Whisper-Request': '1' }),
+      ...(cookie ? { Cookie: cookie } : {})
+    }, body: method === 'GET' ? undefined : JSON.stringify(body ?? {}) });
+    return { status: response.status, data: await response.json(), cookie: response.headers.get('set-cookie')?.split(';')[0], setCookie: response.headers.get('set-cookie') };
+  };
+  const member = async username => {
+    const account = envelope(username);
+    assert.equal((await request('/api/auth/register', 'POST', account)).status, 202);
+    await f.db.prepare("UPDATE users SET status='active' WHERE username=?").bind(username).run();
+    return account;
+  };
+  const login = (account, persistent) => request('/api/auth/login', 'POST', {
+    username: account.username, authKey: account.authKey,
+    ...(persistent === undefined ? {} : { persistent })
+  });
+  const expiry = cookie => f.db.prepare('SELECT s.created_at,s.expires_at,s.user_id FROM sessions s WHERE s.token_hash=?')
+    .bind(cookieHash(cookie)).first();
+
+  const durable = await member('persist_true');
+  const saved = await login(durable, true);
+  assert.equal(saved.status, 200);
+  assert.match(saved.setCookie, new RegExp(`Max-Age=${APP_COOKIE_MAX_AGE}`));
+  assert.equal((await expiry(saved.cookie)).expires_at, APP_SESSION_EXPIRES_AT);
+  const beforeResume = await f.db.prepare('SELECT COUNT(*) AS n FROM sessions WHERE user_id=?').bind(saved.data.id).first();
+  for (let i = 0; i < 3; i++) assert.equal((await request('/api/account/me', 'GET', undefined, saved.cookie)).status, 200);
+  assert.equal((await f.db.prepare('SELECT COUNT(*) AS n FROM sessions WHERE user_id=?').bind(saved.data.id).first()).n, beforeResume.n);
+  assert.equal((await f.db.prepare('SELECT COUNT(*) AS n FROM login_history WHERE user_id=?').bind(saved.data.id).first()).n, 1);
+  assert.equal((await request('/api/auth/logout', 'POST', {}, saved.cookie)).status, 200);
+  assert.equal(await expiry(saved.cookie), null);
+  const logoutRow = await f.db.prepare('SELECT end_reason FROM login_history WHERE user_id=?').bind(saved.data.id).first();
+  assert.equal(logoutRow.end_reason, 'logout');
+
+  for (const [username, marker] of [['persist_missing', undefined], ['persist_string', 'true'], ['persist_false', false]]) {
+    const account = await member(username), result = await login(account, marker);
+    assert.equal(result.status, 200);
+    assert.match(result.setCookie, /Max-Age=43200/);
+    const row = await expiry(result.cookie);
+    assert.equal(row.expires_at - row.created_at, 43200000);
+  }
+
+  const forced = await member('persist_forced');
+  await f.db.prepare('UPDATE users SET must_change=1 WHERE username=?').bind(forced.username).run();
+  const forcedLogin = await login(forced, true);
+  assert.equal(forcedLogin.status, 200);
+  assert.match(forcedLogin.setCookie, /Max-Age=43200/);
+  const forcedRow = await expiry(forcedLogin.cookie);
+  assert.equal(forcedRow.expires_at - forcedRow.created_at, 43200000);
+
+  const revoked = await member('persist_revoked');
+  const revokedLogin = await login(revoked, true);
+  assert.equal(revokedLogin.status, 200);
+  const revokedId = revokedLogin.data.id;
+  await f.db.prepare('UPDATE users SET credential_version=credential_version+1 WHERE id=?').bind(revokedId).run();
+  assert.equal((await request('/api/account/me', 'GET', undefined, revokedLogin.cookie)).status, 401);
+  assert.equal(await expiry(revokedLogin.cookie), null);
+  const revokedRow = await f.db.prepare('SELECT end_reason FROM login_history WHERE user_id=?').bind(revokedId).first();
+  assert.equal(revokedRow.end_reason, 'revoked');
+}
+
+test('local persistent login requires explicit boolean and remains revocable', { timeout: 120000 }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'whisper-persistent-session-test-'));
+  const app = await createWhisperServer({ port: 0, dataDir: dir });
+  try { await persistenceExercise({ url: app.localUrl, db: localStore(app.db) }); }
+  finally { await app.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('Workers D1 persistent login requires explicit boolean and remains revocable', { timeout: 120000 }, async () => {
+  const f = await cloudFixture();
+  try { await persistenceExercise(f); } finally { await f.close(); }
 });
 
 test('0004 preserves existing data and the 0.5.4 session SQL contract', () => {

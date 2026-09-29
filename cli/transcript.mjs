@@ -1,5 +1,6 @@
 import { TTL, normalizeServer } from './client.mjs';
-const SIMPLE = new Set(['/login', '/register', '/passwd', '/recover', '/chats', '/safety', '/clear', '/refresh', '/web', '/logout', '/help', '/quit']);
+import { safeText } from './theme.mjs';
+const SIMPLE = new Set(['/login', '/register', '/passwd', '/recover', '/me', '/devices', '/privacy', '/chats', '/safety', '/clear', '/refresh', '/web', '/logout', '/help', '/quit']);
 // Only syntactically valid commands are eligible for in-memory recall.
 export function historyCommand(command, argument) {
   if (SIMPLE.has(command)) return argument ? null : command;
@@ -17,9 +18,9 @@ export class CommandTranscript {
   setIdentity(identity) {
     if (this.identity !== identity) { this.clear(); this.identity = identity; }
   }
-  show(scope, afterSeq, command, lines) {
+  show(scope, afterSeq, command, lines, { literal = false } = {}) {
     const id = `local-command-${++this.serial}`;
-    this.entries.push({ id, scope, afterSeq, lines: [`› ${command} · 仅本机`, ...lines, ''] });
+    this.entries.push({ id, scope, afterSeq, literal, lines: [`› ${safeText(command)} · 仅本机`, ...lines.map(safeText), ''] });
     // Bound local UI output, never truncate the server's message history here.
     if (this.entries.length > 64) this.entries.shift();
     this.revision++; this.cache = null;
@@ -34,7 +35,7 @@ export class CommandTranscript {
     const commandRows = (entry) => {
       entry.lines.forEach((line, i) => {
         body.push(line); keys.push(`${entry.id}:${i}`);
-        styles.push({ role: i === 0 ? 'command' : i === 1 ? 'title' : 'ui' });
+        styles.push({ role: i === 0 ? 'command' : i === 1 ? 'title' : entry.literal ? 'normal' : 'ui' });
       });
     };
     for (const group of groups) {

@@ -4,7 +4,7 @@
 
 ## 安装与使用
 
-在电脑运行 `npm.cmd run build:android` 后，安装文件在 `public/downloads/whisper-android-0.5.5-r1.apk`。将 APK 传到手机，点开并允许当前文件管理器安装该应用，可覆盖原有相同签名版本。要求 Android 8.0 或以上，且 Android System WebView / Chrome 已更新。登录、申请审批、改密、成员恢复、双人聊天、安全码和消息倒计时使用现有协议；阅后图片打开后最多显示三秒，随后先清除资源再播放空壳消散动画。
+在电脑运行 `npm.cmd run build:android` 后，安装文件在 `public/downloads/whisper-android-0.5.6-r1.apk`。将 APK 传到手机，点开并允许当前文件管理器安装该应用，可覆盖原有相同签名版本。要求 Android 8.0 或以上，且 Android System WebView / Chrome 已更新。登录、申请审批、改密、成员恢复、双人聊天、安全码和消息倒计时使用现有协议；阅后图片打开后最多显示三秒，随后先清除资源再播放空壳消散动画。
 
 应用版本显示在登录、会话和“我的”页。APK 的界面、脚本、libsodium 与 W 图标随安装包分发，不从网页下载可执行代码。安装包升级需要使用相同应用 ID 和签名密钥；应用数据仍包含私有的公钥核对记录，禁止为修复升级而清空它。
 

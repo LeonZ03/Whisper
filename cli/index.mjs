@@ -2,6 +2,7 @@
 import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
 import { WhisperClient } from './client.mjs';
+import { ProtectedLoginStore } from './login-store.mjs';
 import { TerminalUI, safeText } from './terminal.mjs';
 import { ChatApplication, CLIENT_VERSION } from './application.mjs';
 function options(args) {
@@ -24,7 +25,8 @@ try {
   else if (config.version) console.log('Whisper CLI ' + CLIENT_VERSION);
   else {
     const root = fileURLToPath(new URL('../', import.meta.url));
-    const client = new WhisperClient({ server: config.server, pinPath: resolve(process.env.WHISPER_CLI_DATA_DIR || resolve(root, 'data'), 'cli-pins.json') });
+    const dataDir = process.env.WHISPER_CLI_DATA_DIR || resolve(root, 'data');
+    const client = new WhisperClient({ server: config.server, pinPath: resolve(dataDir, 'cli-pins.json'), loginStore: new ProtectedLoginStore(dataDir) });
     const ui = new TerminalUI({ color: config.color }); app = new ChatApplication(client, ui);
     const stop = () => { void app.close(); };
     process.on('SIGINT', stop); process.on('SIGTERM', stop);

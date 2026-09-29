@@ -63,7 +63,8 @@ export function accountService({ db, request, origin, body = {}, pepper, hashCre
     const token = randomB64(32).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/, '');
     const tokenHash = await digest(token);
     const device = sessionDevice(request), now = Date.now();
-    const expiresAt = device.method === 'app' ? APP_SESSION_EXPIRES_AT : now + 43200000;
+    const persistent = device.method === 'app' || (body.persistent === true && !user.must_change);
+    const expiresAt = persistent ? APP_SESSION_EXPIRES_AT : now + 43200000;
     const insert = stmt("INSERT INTO sessions(token_hash,user_id,created_at,expires_at,credential_version) SELECT ?,id,?,?,credential_version FROM users WHERE id=? AND credential_version=? AND auth_hash=? AND status='active' AND (auth_scheme<>'root-bootstrap-hmac-v1' OR root_activation_consumed=0) RETURNING user_id", tokenHash, now, expiresAt, user.id, user.credential_version, user.auth_hash);
     const commands = [insert,
       stmt('INSERT INTO session_devices(token_hash,public_id,method,device,ip) SELECT token_hash,?,?,?,? FROM sessions WHERE token_hash=?', crypto.randomUUID(), device.method, device.device, sessionIP, tokenHash), recordLocation(tokenHash)];
@@ -75,7 +76,7 @@ export function accountService({ db, request, origin, body = {}, pepper, hashCre
     }
     const committed = await db.batch(commands), result = committed[0].results?.[0];
     if (!result) fail(409, user.role === 'root' && user.auth_scheme === 'root-bootstrap-hmac-v1' ? '首次激活码已使用；请使用现有会话改密，或由所有者执行恢复。' : '账号状态已更新，请重新登录。');
-    return { 'Set-Cookie': cookie(token, origin, device.method === 'app' ? APP_COOKIE_MAX_AGE : 43200) };
+    return { 'Set-Cookie': cookie(token, origin, persistent ? APP_COOKIE_MAX_AGE : 43200) };
   }
   async function reauthenticate(user, key, activationCode) {
     await checkAttempts(user.username);

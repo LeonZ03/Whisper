@@ -33,7 +33,7 @@ function dependency(name) {
   dependencies.set(name,data.version);copy(p,'node_modules/'+name);
   for(const child of Object.keys(data.dependencies||{}))dependency(child);
 }
-for(const n of ['application.mjs','client.mjs','index.mjs','terminal.mjs','theme.mjs','transcript.mjs'])copy(join(root,'cli',n),'cli/'+n);
+for(const n of ['application.mjs','client.mjs','index.mjs','terminal.mjs','theme.mjs','transcript.mjs', 'account-ui.mjs', 'login-store.mjs'])copy(join(root,'cli',n),'cli/'+n);
 copy(join(root,'src/crypto.mjs'),'src/crypto.mjs');
 copy(join(root,'src/account-client.mjs'),'src/account-client.mjs');
 for(const n of ['whisper.cmd','README.txt','uninstall.ps1'])copy(join(root,'client-distribution',n),n);

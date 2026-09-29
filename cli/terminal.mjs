@@ -203,6 +203,18 @@ export class TerminalUI extends EventEmitter {
   render() {
     if (!this.active) return;
     const now = Date.now();
+    let expired = false;
+    for (let i = 0; i < this.state.body.length; i++) {
+      if (Number.isFinite(this.state.bodyStyles?.[i]?.expiresAt) && this.state.bodyStyles[i].expiresAt <= now && this.state.body[i]) {
+        this.state.body[i] = ''; expired = true;
+      }
+    }
+    if (expired) {
+      // Clear cached plaintext before hiding expired rows; no animation delays erasure.
+      for (const row of this.wrapped?.rows || []) if (Number.isFinite(row.style?.expiresAt) && row.style.expiresAt <= now) row.text = '';
+      for (const row of this.layout?.body || []) if (Number.isFinite(row.style?.expiresAt) && row.style.expiresAt <= now) row.text = '';
+      this.emit('expiry', now);
+    }
     const width = Math.max(8, (this.output.columns || 80) - 1);
     const height = Math.max(8, this.output.rows || 24);
     const header = this.state.header.flatMap((s, i) => wrapText(s, width).map((text) => this.theme.header(text, i, this.state))).slice(0, height < 16 ? 2 : 4);
