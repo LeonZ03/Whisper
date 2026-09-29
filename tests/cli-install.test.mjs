@@ -6,6 +6,8 @@ import { join, resolve } from 'node:path';
 import { spawn, execFileSync } from 'node:child_process';
 import { createServer, get } from 'node:http';
 import { pathToFileURL } from 'node:url';
+import { createHash } from 'node:crypto';
+import { unzipSync, zipSync, strToU8 } from 'fflate';
 import { createWhisperServer } from '../server/app.mjs';
 import { installCommand } from '../public/cli-command.mjs';
 const shell = join(process.env.SystemRoot, 'System32/WindowsPowerShell/v1.0/powershell.exe');
@@ -40,6 +42,11 @@ test('PowerShell command install, repeat install, integrity failure, installed C
   try {
     const result = await run(shell, ['-NoProfile', '-Command', command + '; whisper --version; (Get-Command whisper).Source'], { env });
     assert.equal(result.code, 0, result.out); assert.ok(existsSync(bin), result.out);
+    assert.match(result.out, /Preparing Whisper CLI setup/);
+    for (let stage = 1; stage <= 5; stage++) assert.ok(result.out.includes(`[${stage}/5]`), result.out);
+    assert.match(result.out, /Download: 0%/); assert.match(result.out, /Download: 100%/);
+    assert.match(result.out, /Installation successful!.*First installation/);
+    assert.doesNotMatch(result.out, /Upgrade successful!/);
     assert.ok(result.out.includes('Whisper CLI ' + release.version), result.out); assert.ok(result.out.includes(bin), result.out);
     const marker = JSON.parse(readFileSync(join(home, 'installed.json')));
     assert.equal(marker.pathAdded, false); assert.equal(marker.sha256, release.sha256);
@@ -54,10 +61,12 @@ test('PowerShell command install, repeat install, integrity failure, installed C
     mkdirSync(join(home, 'data'), { recursive: true }); writeFileSync(join(home, 'data/cli-pins.json'), '{}');
     const repeat = await run(shell, ['-NoProfile', '-Command', command], { env });
     assert.equal(repeat.code, 0, repeat.out); assert.equal(readFileSync(join(home, 'data/cli-pins.json'), 'utf8'), '{}');
+    assert.match(repeat.out, /Reinstallation successful!.*Version unchanged/);
+    assert.doesNotMatch(repeat.out, /Upgrade successful!/);
     const clean = { ...env, PATH: join(process.env.SystemRoot, 'System32'), WHISPER_TEST_CLIENT_ROOT: join(home, 'versions', release.sha256, 'Whisper-CLI'), WHISPER_TEST_LAUNCHER: bin };
     delete clean.NODE_PATH; delete clean.NODE_OPTIONS; delete clean.WHISPER_SERVER; delete clean.NODE_TEST_CONTEXT;
     const chat = await run(process.execPath, ['--test', '--test-force-exit', 'tests/cli-tty.test.mjs'], { env: clean });
-    assert.equal(chat.code, 0, chat.out); assert.match(chat.out, /PowerShell.*ConPTY/); assert.match(chat.out, /pass 2/);
+    assert.equal(chat.code, 0, chat.out); assert.match(chat.out, /PowerShell.*ConPTY/); assert.match(chat.out, /pass 3/);
     badServer = createServer((req, res) => {
       if (req.url === '/downloads/manifest.json') { res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ ...release, sha256: '0'.repeat(64) })); }
       else if (req.url === '/downloads/whisper-cli-windows-x64.zip') createReadStream('public/downloads/whisper-cli-windows-x64.zip').pipe(res);
@@ -67,6 +76,7 @@ test('PowerShell command install, repeat install, integrity failure, installed C
     const before = readFileSync(bin, 'utf8');
     const bad = await run(shell, ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', resolve('public/install.ps1'), '-Server', `http://127.0.0.1:${badServer.address().port}`, '-InstallDir', home, '-NoPath']);
     assert.notEqual(bad.code, 0); assert.match(bad.out, /integrity check failed/); assert.equal(readFileSync(bin, 'utf8'), before);
+    assert.doesNotMatch(bad.out, /successful!/);
     const removed = await run(shell, ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', join(home, 'uninstall.ps1'), '-Yes'], { env });
     assert.equal(removed.code, 0, removed.out); assert.equal(existsSync(bin), false);
     assert.equal(readFileSync(join(home, 'data/cli-pins.json'), 'utf8'), '{}');
@@ -76,6 +86,50 @@ test('PowerShell command install, repeat install, integrity failure, installed C
     await app.close(); if (badServer) await new Promise((r) => badServer.close(r));
     await sleep(300); rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 500 });
   }
+});
+
+test('PowerShell distinguishes a real version upgrade from reinstall, downgrade and failed activation', { timeout: 180000 }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'whisper-install-upgrade-'));
+  const home = join(dir, 'client'), env = { ...process.env, TEMP: dir, TMP: dir };
+  const sha = bytes => createHash('sha256').update(bytes).digest('hex');
+  // Build a synthetic older release with its own verified package metadata.
+  // Its actual runtime and client files are the already isolated release payload.
+  const files = Object.fromEntries(Object.entries(unzipSync(readFileSync('public/downloads/whisper-cli-windows-x64.zip'))).map(([name, bytes]) => [name.replaceAll('\\', '/'), bytes]));
+  const prefix = 'Whisper-CLI/';
+  for (const name of ['package.json', 'BUILD-INFO.json']) {
+    const data = JSON.parse(Buffer.from(files[prefix + name]).toString()); data.version = '0.0.1'; files[prefix + name] = strToU8(JSON.stringify(data));
+  }
+  const inventory = JSON.parse(Buffer.from(files[prefix + 'FILES-SHA256.json']).toString());
+  for (const name of ['package.json', 'BUILD-INFO.json']) inventory[name] = sha(files[prefix + name]);
+  files[prefix + 'FILES-SHA256.json'] = strToU8(JSON.stringify(inventory));
+  const oldZIP = zipSync(files, { level: 1 });
+  const old = { ...release, version: '0.0.1', bytes: oldZIP.length, sha256: sha(oldZIP) };
+  let manifest = old, payload = oldZIP;
+  const server = createServer((req, res) => {
+    if (req.url === '/downloads/manifest.json') { res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify(manifest)); }
+    else if (req.url === '/downloads/' + release.filename) { res.setHeader('Content-Length', payload.length); res.end(payload); }
+    else { res.statusCode = 404; res.end(); }
+  });
+  await new Promise(resolveServer => server.listen(0, '127.0.0.1', resolveServer));
+  const install = () => run(shell, ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', resolve('public/install.ps1'), '-Server', `http://127.0.0.1:${server.address().port}`, '-InstallDir', home, '-NoPath'], { env });
+  try {
+    const first = await install(); assert.equal(first.code, 0, first.out); assert.match(first.out, /Installation successful!/);
+    mkdirSync(join(home, 'data'), { recursive: true }); writeFileSync(join(home, 'data/cli-pins.json'), '{}');
+    manifest = release; payload = readFileSync('public/downloads/whisper-cli-windows-x64.zip');
+    const upgraded = await install(); assert.equal(upgraded.code, 0, upgraded.out);
+    assert.ok(upgraded.out.includes(`Upgrade successful! Whisper CLI v0.0.1 -> v${release.version}.`), upgraded.out);
+    assert.equal(JSON.parse(readFileSync(join(home, 'installed.json'))).version, release.version);
+    assert.equal(readFileSync(join(home, 'data/cli-pins.json'), 'utf8'), '{}');
+    const before = readFileSync(join(home, 'bin/whisper.cmd'), 'utf8');
+    manifest = { ...release, version: '99.0.0' };
+    const mismatch = await install(); assert.notEqual(mismatch.code, 0); assert.match(mismatch.out, /Package version does not match/); assert.doesNotMatch(mismatch.out, /successful!/);
+    assert.equal(readFileSync(join(home, 'bin/whisper.cmd'), 'utf8'), before);
+    assert.equal(JSON.parse(readFileSync(join(home, 'installed.json'))).version, release.version);
+    manifest = old; payload = oldZIP;
+    const downgraded = await install(); assert.equal(downgraded.code, 0, downgraded.out);
+    assert.ok(downgraded.out.includes(`Version change successful! Whisper CLI v${release.version} -> v0.0.1.`));
+    assert.doesNotMatch(downgraded.out, /Upgrade successful!/);
+  } finally { await new Promise(close => server.close(close)); rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 500 }); }
 });
 test('start.cmd prints CLI instructions and stop clears them, using isolated local service', { timeout: 90000 }, async () => {
   const dir = mkdtempSync(join(tmpdir(), 'whisper-launch-test-'));
@@ -113,14 +167,26 @@ test('network-only failures retry directly: bootstrap, manifest and archive; use
   const env = { ...process.env, LOCALAPPDATA: join(dir, 'local'), TEMP: dir, TMP: dir };
   const home = join(env.LOCALAPPDATA, 'WhisperCLI');
   const simulate = "function Invoke-WebRequest { throw [System.Net.WebException]::new('Simulated proxy transport failure') }; ";
+  let breakPackage = false, redirectPackage = false;
+  const gateway = createServer((req, res) => {
+    if (req.url === '/downloads/' + release.filename) {
+      if (breakPackage && !String(req.headers['user-agent']).startsWith('curl/')) { req.socket.destroy(); return; }
+      if (breakPackage) breakPackage = false;
+      if (redirectPackage) { res.writeHead(302, { Location: app.localUrl + req.url }); res.end(); return; }
+    }
+    get(app.localUrl + req.url, response => { res.writeHead(response.statusCode, response.headers); response.pipe(res); }).on('error', () => res.destroy());
+  });
+  await new Promise(resolveGateway => gateway.listen(0, '127.0.0.1', resolveGateway));
+  const origin = `http://127.0.0.1:${gateway.address().port}`;
   try {
-    const bootstrap = installCommand(app.localUrl, release).replace('-File $p -Server $u;', '-File $p -Server $u -NoPath;');
+    const bootstrap = installCommand(origin, release).replace('-File $p -Server $u;', '-File $p -Server $u -NoPath;');
     const first = await run(shell, ['-NoProfile', '-Command', simulate + bootstrap + '; whisper --version'], { env });
     assert.equal(first.code, 0, first.out);
     assert.match(first.out, /retrying direct with HTTPS verification/);
     assert.equal(JSON.parse(readFileSync(join(home, 'installed.json'))).pathAdded, false);
     const q = (s) => "'" + s.replaceAll("'", "''") + "'";
-    const directInstaller = simulate + `& ${q(resolve('public/install.ps1'))} -Server ${q(app.localUrl)} -InstallDir ${q(home)} -NoPath`;
+    const directInstaller = simulate + `& ${q(resolve('public/install.ps1'))} -Server ${q(origin)} -InstallDir ${q(home)} -NoPath`;
+    breakPackage = true;
     const second = await run(shell, ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', directInstaller], { env });
     assert.equal(second.code, 0, second.out);
     assert.equal((second.out.match(/Default download path failed/g) || []).length, 2);
@@ -129,5 +195,9 @@ test('network-only failures retry directly: bootstrap, manifest and archive; use
     assert.ok(script.includes('--noproxy')); assert.ok(!script.includes('--insecure'));
     assert.ok(!script.includes('ServerCertificateValidationCallback'));
     assert.ok(!bootstrap.includes('](https://')); assert.ok(!bootstrap.includes('$\\_'));
-  } finally { await app.close(); rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 500 }); }
+    redirectPackage = true;
+    const redirect = await run(shell, ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', resolve('public/install.ps1'), '-Server', origin, '-InstallDir', home, '-NoPath'], { env });
+    assert.notEqual(redirect.code, 0); assert.match(redirect.out, /HTTP 302/);
+    assert.doesNotMatch(redirect.out, /Default download path failed|successful!/);
+  } finally { await new Promise(close => gateway.close(close)); await app.close(); rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 500 }); }
 });

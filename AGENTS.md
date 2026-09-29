@@ -39,6 +39,7 @@
 - Never include host data or credentials in the client release. Retain the ZIP as an installation payload, not a project backup.
 - Generate launcher and web install commands from public/cli-command.mjs.
 - Installer tests MUST use temporary paths and NoPath; never mutate the host user PATH for tests.
+- Installer feedback must show real installation stages and download progress, then an English result distinguishing first install, version upgrade and same-version reinstall. Print success only after activation; never call a downgrade an upgrade.
 - Run test:cli:install and test:cli:package for installer/release changes.
 
 ## CLI interaction guarantees

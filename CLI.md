@@ -15,6 +15,8 @@
 在自己的 Windows x64 PowerShell 中执行服务提供者启动窗口里的完整安装命令。
 也可以从网站首页点击“CLI 安装与使用”，进入 `/cli.html` 后点击“复制安装命令”。这是帮助页，不再要求手动下载和解压。
 命令会下载脚本、核对脚本 SHA-256，在独立 PowerShell 进程中运行，然后下载、校验和安装客户端。
+执行后先提示下载安装器，再依次显示五个阶段：检查版本、下载、校验、解压校验文件、启用安装；下载按实际字节显示百分比与大小，进度条最多每半秒刷新一次，直连重试时显示 curl 下载进度。
+全部步骤成功后用英文明确显示结果：首次安装为 `Installation successful!`；从旧版本升级为 `Upgrade successful!`，并列出旧版本和新版本；同版本重复安装为 `Reinstallation successful! (Version unchanged)`。版本回退显示 `Version change successful!`，不会误报为升级。失败时不显示成功提示。随后可输入 `whisper` 启动。
 安装到 `%LOCALAPPDATA%\WhisperCLI`，添加当前用户的 `bin` 到用户 PATH，同时刷新当前命令窗口的 PATH。
 不要求管理员权限，不全局安装 Node.js/npm，不安装系统服务，不修改机器级或用户级持久执行策略。
 脚本调用的 `-ExecutionPolicy Bypass` 仅用于该子进程；组织策略阻止执行时应遵守组织要求，不关闭防护软件。

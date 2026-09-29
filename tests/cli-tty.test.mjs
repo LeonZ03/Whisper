@@ -135,7 +135,8 @@ test('PowerShell + ConPTY: register, masked secrets, live chat, Chinese, paste, 
       cwd: clientRoot, name: 'xterm-256color', cols: 110, rows: 34, env: { ...process.env, WHISPER_CLI_DATA_DIR: join(dir, 'pins') }, useConpty: true,
     });
     child.onData((data) => { raw += data; terminal.write(data); }); child.onExit((event) => { exited = true; exitCode = event.exitCode; });
-    await visible('Whisper CLI ' + clientVersion); child.write('/'); await visible('↑↓ 选择');
+    await visible('Whisper CLI ' + clientVersion); await visible('服务已连接。输入 /login 或 /register。');
+    child.write('/'); await visible('❯ /login');
     child.write('\x1b[B'); await visible('❯ /register');
     mkdirSync('test-results', { recursive: true });
     writeFileSync(`test-results/${reportPrefix}-command-menu.txt`, screen(), 'utf8');
