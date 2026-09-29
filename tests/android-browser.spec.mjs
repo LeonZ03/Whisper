@@ -81,10 +81,32 @@ test('Android packaged UI: durable login, devices, encrypted chat, 3-second imag
     await a.page.locator('#nav-my').click(); await expect(a.page.locator('#my-name')).toHaveText('android_alice');
     await expect(a.page.locator('#my-panel [data-app-version]')).toHaveText(`v${version}`);
     await expect(a.page.locator('#account-sessions')).toContainText('OPPO test');
-    await expect(a.page.locator('#account-sessions')).toContainText('Android App');
-    await expect(a.page.locator('#account-sessions')).toContainText('IP 127.0.0.1');
+    await expect(a.page.locator('#account-sessions')).toContainText('本机');
+    await expect(a.page.locator('#account-sessions')).not.toContainText('Android App');
+    await expect(a.page.locator('#account-sessions')).not.toContainText('127.0.0.1');
+    expect(await a.page.locator('#service-settings .setting-row').evaluate(el => getComputedStyle(el).borderLeftWidth)).toBe('0px');
+    expect(await a.page.locator('#account-sessions').evaluate(el => el.getBoundingClientRect().bottom <= document.getElementById('service-settings').getBoundingClientRect().top)).toBe(true);
     expect(await a.page.locator('#privacy-button').evaluate(el => getComputedStyle(el).borderLeftWidth)).toBe('0px');
     await a.page.screenshot({ path: 'test-results/android/my.png' });
+    const historyOwner = app.db.prepare('SELECT id FROM users WHERE username=?').get('android_alice').id;
+    for (let i = 1; i <= 12; i++) app.db.prepare('INSERT INTO login_history(id,user_id,method,device,ip,location,created_at,expires_at,ended_at,end_reason) VALUES(?,?,?,?,?,?,?,?,?,?)').run(
+      `history-fixture-${i}`, historyOwner, i % 2 ? 'web' : 'cli', i % 2 ? 'Edge / Windows' : 'CLI / Windows', `192.0.2.${i}`,
+      JSON.stringify({ country: 'CN', city: '上海' }), Date.now() - i * 3600000, Date.now() + 3600000, Date.now() - i * 3600000 + 60000, 'logout');
+    expect(app.db.prepare('SELECT COUNT(*) AS n FROM login_history WHERE user_id=?').get(historyOwner).n).toBe(10);
+    await a.page.locator('#account-devices-open').click();
+    await expect(a.page.locator('#device-history-panel')).toBeVisible(); await expect(a.page.locator('#mobile-nav')).not.toBeVisible();
+    await expect(a.page.locator('#device-history-list .session-item')).toHaveCount(10);
+    await expect(a.page.locator('#device-history-list')).toContainText('127.0.0.1');
+    await expect(a.page.locator('#device-history-list')).toContainText('已退出');
+    await expect(a.page.locator('#device-history-list')).toContainText('中国 · 上海');
+    await a.page.screenshot({ path: 'test-results/android/device-history.png' });
+    const headerTop = await a.page.locator('.device-history-header').evaluate(el => el.getBoundingClientRect().top);
+    await a.page.locator('#device-history-list .session-item').last().scrollIntoViewIfNeeded();
+    expect(await a.page.locator('#device-history-scroll').evaluate(el => el.scrollTop)).toBeGreaterThan(0);
+    expect(await a.page.locator('.device-history-header').evaluate(el => el.getBoundingClientRect().top)).toBe(headerTop);
+    expect(await a.page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await a.page.evaluate(() => globalThis.whisperAndroidBack()); await expect(a.page.locator('#my-panel')).toBeVisible();
+    await expect(a.page.locator('#account-devices-open')).toBeFocused();
     await a.page.locator('#privacy-button').click(); await expect(a.page.locator('#privacy-dialog')).toBeVisible();
     await a.page.evaluate(() => globalThis.whisperAndroidBack()); await expect(a.page.locator('#privacy-dialog')).not.toBeVisible();
     await a.page.locator('#nav-conversations').click(); await a.page.locator('#peer-name').fill('android_bobby');

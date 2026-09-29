@@ -10,10 +10,11 @@ function mobileView(view) {
   if (!android) return;
   $('chat-screen').dataset.view = view;
   $('my-panel').hidden = view !== 'my';
+  $('device-history-panel').hidden = view !== 'devices';
   $('admin-panel').hidden = view !== 'admin';
-  $('chat-body').hidden = view === 'my' || view === 'admin';
-  $('chat-screen').querySelector('.app-header').hidden = view === 'chat' || view === 'my';
-  $('mobile-nav').hidden = view === 'chat';
+  $('chat-body').hidden = ['my', 'admin', 'devices'].includes(view);
+  $('chat-screen').querySelector('.app-header').hidden = ['chat', 'my', 'devices'].includes(view);
+  $('mobile-nav').hidden = view === 'chat' || view === 'devices';
   for (const name of ['conversations', 'my']) {
     $(`nav-${name}`).classList.toggle('active', name === view);
     $(`nav-${name}`).setAttribute('aria-current', name === view ? 'page' : 'false');
@@ -213,7 +214,7 @@ function lock() {
   }
 }
 const accountControls = accountUI({ api, getSelf: () => self, lock, toast });
-const sessionsUI = android ? createAccountSessionsUI({ root: $('account-sessions').querySelector('[data-account-sessions-list]'),
+const sessionsUI = android ? createAccountSessionsUI({ root: $('device-history-list'), summary: $('current-device-name'),
   fetchImpl: async (path, options) => {
     const payload = await api(path); if (options.signal.aborted) throw new DOMException('Aborted', 'AbortError');
     return { ok: true, json: async () => payload };
@@ -448,6 +449,10 @@ if (android) {
   $('chat-back').onclick = () => leaveChat('conversations');
   $('nav-conversations').onclick = () => leaveChat(self?.role === 'root' ? 'admin' : 'conversations');
   $('nav-my').onclick = () => { leaveChat('my'); void sessionsUI.load(); };
+  $('account-devices-open').onclick = () => {
+    mobileView('devices'); $('device-history-scroll').scrollTop = 0; $('device-history-title').focus(); void sessionsUI.load();
+  };
+  $('device-history-back').onclick = () => { mobileView('my'); $('account-devices-open').focus(); };
   $('privacy-button').onclick = () => $('privacy-dialog').showModal();
   $('privacy-close').onclick = () => $('privacy-dialog').close();
   $('chat-menu-button').onclick = () => $('chat-options').showModal();
@@ -461,7 +466,8 @@ if (android) {
       if (!dialog.dispatchEvent(new Event('cancel', { cancelable: true }))) return;
       dialog.close(); return;
     }
-    if (self && $('chat-screen').dataset.view === 'chat') leaveChat('conversations');
+    if (self && $('chat-screen').dataset.view === 'devices') $('device-history-back').click();
+    else if (self && $('chat-screen').dataset.view === 'chat') leaveChat('conversations');
     else if (self && $('chat-screen').dataset.view === 'my') leaveChat(self.role === 'root' ? 'admin' : 'conversations');
     else globalThis.whisperAndroidExit();
   };
@@ -469,7 +475,7 @@ if (android) {
   globalThis.whisperAndroidResume = () => {
     androidPaused = false; lifecycle.tick({ animate: false });
     if (savedLoginPending) void restoreAndroidLogin();
-    else { void sync(); if (self && $('chat-screen').dataset.view === 'my') void sessionsUI.load(); }
+    else { void sync(); if (self && ['my', 'devices'].includes($('chat-screen').dataset.view)) void sessionsUI.load(); }
   };
   globalThis.whisperAndroidLock = lock;
   globalThis.whisperAndroidSessionRevoked = () => { if (self) { lock(); toast('登录已撤销，请重新登录。'); } };

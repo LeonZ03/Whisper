@@ -64,6 +64,11 @@ export async function createWhisperServer(options = {}) {
     try { db.exec(readFileSync(resolve(root, 'cloud/migrations/0003_session_devices.sql'), 'utf8')); db.exec('COMMIT'); }
     catch (error) { db.exec('ROLLBACK'); db.close(); throw error; }
   }
+  if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='login_history'").get()) {
+    db.exec('BEGIN IMMEDIATE');
+    try { db.exec(readFileSync(resolve(root, 'cloud/migrations/0004_login_history.sql'), 'utf8')); db.exec('COMMIT'); }
+    catch (error) { db.exec('ROLLBACK'); db.close(); throw error; }
+  }
   const instance = randomUUID();
   const sessions = new Map();
   const limits = new Map();

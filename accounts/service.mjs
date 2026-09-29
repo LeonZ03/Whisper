@@ -15,6 +15,8 @@ export function accountService({ db, request, origin, body = {}, pepper, hashCre
   const first = (sql, ...args) => stmt(sql, ...args).first();
   const all = async (sql, ...args) => (await stmt(sql, ...args).all()).results;
   const sessionIP = String(ip).replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 80);
+  const sessionLocation = JSON.stringify(Object.fromEntries(['country','region','city'].map(key => [key, typeof location[key] === 'string' ? location[key].slice(0, 120) : ''])));
+  const recordLocation = tokenHash => stmt('UPDATE login_history SET location=? WHERE id=(SELECT public_id FROM session_devices WHERE token_hash=?) AND ip=? AND ended_at IS NULL', sessionLocation, tokenHash, sessionIP);
   const verifier = hashCredential || ((key, salt, username) => mac(pepper, 'auth-v1', username, salt, key));
   const attemptScope = async username => digest('account-login:' + username);
   const audit = (action, user = {}) => stmt('INSERT INTO admin_audit(timestamp,action,target_id,target_name) VALUES(?,?,?,?)', Date.now(), action, user.id || null, user.username || null);
@@ -40,7 +42,7 @@ export function accountService({ db, request, origin, body = {}, pepper, hashCre
   async function authorize({ allowForced = false, memberOnly = false } = {}) {
     const token = tokenOf(request);
     const tokenHash = token && await digest(token);
-    const user = tokenHash && await first('SELECT u.*,d.public_id AS session_device_id,d.ip AS session_ip FROM sessions s JOIN users u ON u.id=s.user_id LEFT JOIN session_devices d ON d.token_hash=s.token_hash WHERE s.token_hash=? AND s.expires_at>? AND s.credential_version=u.credential_version AND u.status=\'active\'', tokenHash, Date.now());
+    const user = tokenHash && await first('SELECT u.*,d.public_id AS session_device_id,d.ip AS session_ip,h.id AS session_history_id,h.location AS session_location FROM sessions s JOIN users u ON u.id=s.user_id LEFT JOIN session_devices d ON d.token_hash=s.token_hash LEFT JOIN login_history h ON h.id=d.public_id WHERE s.token_hash=? AND s.expires_at>? AND s.credential_version=u.credential_version AND u.status=\'active\'', tokenHash, Date.now());
     if (!user) fail(401, '登录已失效，请重新登录。');
     if (user.must_change && !allowForced) fail(403, '请先修改初始密码，再使用其他功能。');
     if (memberOnly && user.role !== 'member') fail(403, 'root 仅用于管理，不参与成员聊天。');
@@ -48,7 +50,12 @@ export function accountService({ db, request, origin, body = {}, pepper, hashCre
       const device = sessionDevice(request);
       // Only the authenticated device can supply its observed IP. Do not renew
       // expiry or invent the historical login IP for pre-upgrade sessions.
-      await stmt("INSERT INTO session_devices(token_hash,public_id,method,device,ip) SELECT s.token_hash,?,?,?,? FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=? AND s.expires_at>? AND s.credential_version=u.credential_version AND u.status='active' ON CONFLICT(token_hash) DO UPDATE SET ip=excluded.ip WHERE session_devices.ip<>excluded.ip", crypto.randomUUID(), device.method, device.device, sessionIP, tokenHash, Date.now()).run();
+      await db.batch([
+        stmt("INSERT INTO session_devices(token_hash,public_id,method,device,ip) SELECT s.token_hash,?,?,?,? FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=? AND s.expires_at>? AND s.credential_version=u.credential_version AND u.status='active' ON CONFLICT(token_hash) DO UPDATE SET ip=excluded.ip WHERE session_devices.ip<>excluded.ip", crypto.randomUUID(), device.method, device.device, sessionIP, tokenHash, Date.now()),
+        recordLocation(tokenHash)
+      ]);
+    } else if (user.session_history_id && user.session_location !== sessionLocation) {
+      await recordLocation(tokenHash).run();
     }
     return user;
   }
@@ -59,7 +66,7 @@ export function accountService({ db, request, origin, body = {}, pepper, hashCre
     const expiresAt = device.method === 'app' ? APP_SESSION_EXPIRES_AT : now + 43200000;
     const insert = stmt("INSERT INTO sessions(token_hash,user_id,created_at,expires_at,credential_version) SELECT ?,id,?,?,credential_version FROM users WHERE id=? AND credential_version=? AND auth_hash=? AND status='active' AND (auth_scheme<>'root-bootstrap-hmac-v1' OR root_activation_consumed=0) RETURNING user_id", tokenHash, now, expiresAt, user.id, user.credential_version, user.auth_hash);
     const commands = [insert,
-      stmt('INSERT INTO session_devices(token_hash,public_id,method,device,ip) SELECT token_hash,?,?,?,? FROM sessions WHERE token_hash=?', crypto.randomUUID(), device.method, device.device, sessionIP, tokenHash)];
+      stmt('INSERT INTO session_devices(token_hash,public_id,method,device,ip) SELECT token_hash,?,?,?,? FROM sessions WHERE token_hash=?', crypto.randomUUID(), device.method, device.device, sessionIP, tokenHash), recordLocation(tokenHash)];
     if (user.role === 'root') {
       commands.push(
         stmt('INSERT INTO root_login_log(timestamp,result,ip,location) SELECT ?,?,?,? WHERE EXISTS(SELECT 1 FROM sessions WHERE token_hash=?)', Date.now(), user.must_change ? 'success_initial' : 'success', String(ip).slice(0, 80), JSON.stringify(location), tokenHash),
@@ -102,7 +109,13 @@ export function accountService({ db, request, origin, body = {}, pepper, hashCre
     }
     if (path === '/api/auth/logout' && method === 'POST') {
       const token = tokenOf(request);
-      if (token) await stmt('DELETE FROM sessions WHERE token_hash=?', await digest(token)).run();
+      if (token) {
+        const tokenHash = await digest(token), now = Date.now();
+        await db.batch([
+          stmt("UPDATE login_history SET ended_at=?,end_reason='logout' WHERE id=(SELECT public_id FROM session_devices WHERE token_hash=?) AND ended_at IS NULL AND expires_at>?", now, tokenHash, now),
+          stmt('DELETE FROM sessions WHERE token_hash=?', tokenHash)
+        ]);
+      }
       return json({ ok: true }, 200, { 'Set-Cookie': cookie('', origin, 0) });
     }
     if (path === '/api/auth/login' && method === 'POST') {
@@ -130,11 +143,19 @@ export function accountService({ db, request, origin, body = {}, pepper, hashCre
     if (path === '/api/account/sessions' && method === 'GET') {
       const user = await authorize(), currentHash = await digest(tokenOf(request));
       const rows = await all('SELECT s.token_hash,s.created_at,s.expires_at,d.public_id,d.method,d.device,d.ip FROM sessions s JOIN users u ON u.id=s.user_id LEFT JOIN session_devices d ON d.token_hash=s.token_hash WHERE s.user_id=? AND s.expires_at>? AND s.credential_version=u.credential_version AND u.status=\'active\' ORDER BY s.created_at DESC,s.rowid DESC', user.id, Date.now());
+      const history = await all('SELECT h.*,d.token_hash AS current_token_hash FROM login_history h LEFT JOIN session_devices d ON d.public_id=h.id WHERE h.user_id=? ORDER BY h.created_at DESC,h.seq DESC LIMIT 10', user.id);
       return json({ sessions: await Promise.all(rows.map(async row => ({
         id: row.public_id || await digest('session-public-v1:' + row.token_hash),
         method: row.method || 'unknown', device: row.device || '未知设备', ip: row.ip || 'unknown',
         createdAt: row.created_at, expiresAt: row.expires_at, current: row.token_hash === currentHash
-      }))) });
+      }))), history: history.map(row => {
+        const expired = row.expires_at <= Date.now(); let region = {};
+        try { region = JSON.parse(row.location); } catch {}
+        return { id: row.id, method: row.method, device: row.device, ip: row.ip,
+          location: { country: region?.country || '', region: region?.region || '', city: region?.city || '', estimated: true },
+          createdAt: row.created_at, expiresAt: row.expires_at, endedAt: row.ended_at ?? (expired ? row.expires_at : null),
+          status: row.end_reason || (expired ? 'expired' : 'active'), current: row.current_token_hash === currentHash };
+      }) });
     }
     if (path === '/api/account/password' && method === 'POST') {
       const u = await authorize({ allowForced: true });

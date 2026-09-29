@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { DatabaseSync } from 'node:sqlite';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomBytes, randomUUID, createHash } from 'node:crypto';
@@ -55,12 +56,18 @@ async function exercise(f, cloud) {
   assert.equal(webRow.expires_at - webRow.created_at, 43200000);
   const list = await request('/api/account/sessions', 'GET', undefined, app.cookie);
   assert.equal(list.status, 200); assert.equal(list.data.sessions.length, 3);
+  assert.equal(list.data.history.length, 3); assert.ok(list.data.history.every(row => row.status === 'active'));
+  for (const cookie of [web.cookie, app.cookie, cli.cookie]) {
+    assert.ok(!JSON.stringify(list.data.history).includes(cookie.split('=')[1]));
+    assert.ok(!JSON.stringify(list.data.history).includes(cookieHash(cookie)));
+  }
   assert.deepEqual(new Set(list.data.sessions.map(row => row.method)), new Set(['web', 'app', 'cli']));
   const current = list.data.sessions.find(row => row.current);
   assert.equal(current.method, 'app'); assert.equal(current.device, 'OPPO PKB110 / Android 15');
   assert.equal(current.ip, cloud ? '203.0.113.8' : '127.0.0.1');
   assert.equal(list.data.sessions.find(row => row.method === 'web').device, 'Edge / Windows');
   assert.equal((await request('/api/account/sessions', 'GET', undefined, other.cookie)).data.sessions.length, 1);
+  assert.equal((await request('/api/account/sessions', 'GET', undefined, other.cookie)).data.history.length, 1);
   assert.equal((await request('/api/account/sessions')).status, 401);
   for (const row of list.data.sessions) {
     assert.deepEqual(Object.keys(row).sort(), ['createdAt', 'current', 'device', 'expiresAt', 'id', 'ip', 'method']);
@@ -69,6 +76,7 @@ async function exercise(f, cloud) {
   // A resumed app checks the existing session rather than issuing a second one.
   for (let i = 0; i < 3; i++) assert.equal((await request('/api/account/me', 'GET', undefined, app.cookie)).status, 200);
   assert.equal((await first('SELECT COUNT(*) AS n FROM sessions WHERE user_id=?', appRow.user_id)).n, 3);
+  assert.equal((await first('SELECT COUNT(*) AS n FROM login_history WHERE user_id=?', appRow.user_id)).n, 3);
   await run('UPDATE sessions SET expires_at=? WHERE token_hash=?', Date.now() - 1, cookieHash(web.cookie));
   assert.equal((await request('/api/account/me', 'GET', undefined, web.cookie)).status, 401);
   assert.equal((await request('/api/account/me', 'GET', undefined, app.cookie)).status, 200);
@@ -91,8 +99,11 @@ async function exercise(f, cloud) {
   assert.equal((await first('SELECT ip FROM session_devices WHERE token_hash=?', hash(legacyToken))).ip, legacy.ip);
   assert.equal((await request('/api/auth/logout', 'POST', {}, cli.cookie)).status, 200);
   assert.equal(await first('SELECT * FROM session_devices WHERE token_hash=?', cookieHash(cli.cookie)), null);
+  const loggedOut = (await request('/api/account/sessions', 'GET', undefined, app.cookie)).data.history.find(row => row.method === 'cli');
+  assert.equal(loggedOut.status, 'logout'); assert.ok(loggedOut.endedAt >= loggedOut.createdAt); assert.equal(loggedOut.current, false);
   await run('UPDATE users SET credential_version=credential_version+1 WHERE id=?', appRow.user_id);
   assert.equal((await request('/api/account/me', 'GET', undefined, app.cookie)).status, 401);
+  assert.equal((await first('SELECT end_reason FROM login_history WHERE id=?', current.id)).end_reason, 'revoked');
   assert.equal((await first('SELECT COUNT(*) AS n FROM session_devices')).n, 1); // Bob only.
   const renewed = await login(alice, { 'X-Whisper-Client': 'app' });
   assert.equal(renewed.status, 200);
@@ -114,6 +125,37 @@ async function exercise(f, cloud) {
   return restartLogin;
 }
 
+// A separate fixture keeps the real 30/minute auth limit intact while testing
+// more than ten complete login/logout cycles through the actual API.
+async function historyExercise(f) {
+  const member = envelope('history_member');
+  const request = async (path, body, cookie, device) => {
+    const method = body === undefined ? 'GET' : 'POST';
+    const response = await fetch(f.url + path, { method, headers: {
+      Origin: f.url, 'Content-Type': 'application/json', 'X-Whisper-Request': '1',
+      ...(cookie ? { Cookie: cookie } : {}),
+      ...(device ? { 'X-Whisper-Client': device === 'Restart probe' ? 'app' : 'cli', 'X-Whisper-Device': device } : {})
+    }, body: body === undefined ? undefined : JSON.stringify(body) });
+    return { status: response.status, data: await response.json(), cookie: response.headers.get('set-cookie')?.split(';')[0] };
+  };
+  assert.equal((await request('/api/auth/register', member)).status, 202);
+  await f.db.prepare("UPDATE users SET status='active' WHERE username=?").bind(member.username).run();
+  const login = device => request('/api/auth/login', { username: member.username, authKey: member.authKey }, undefined, device);
+  const restartLogin = await login('Restart probe');
+  assert.equal(restartLogin.status, 200);
+  for (let i = 0; i < 12; i++) {
+    const historical = await login(`History CLI ${i}`);
+    assert.equal(historical.status, 200);
+    assert.equal((await request('/api/auth/logout', {}, historical.cookie)).status, 200);
+  }
+  const retained = await request('/api/account/sessions', undefined, restartLogin.cookie);
+  assert.equal(retained.status, 200); assert.equal(retained.data.history.length, 10);
+  assert.ok(retained.data.history.every(row => row.status === 'logout'));
+  assert.equal(retained.data.history[0].device, 'History CLI 11'); assert.equal(retained.data.history.at(-1).device, 'History CLI 2');
+  assert.ok(retained.data.sessions.some(row => row.current && row.device === 'Restart probe'));
+  assert.equal((await f.db.prepare('SELECT COUNT(*) AS n FROM login_history WHERE user_id=?').bind(restartLogin.data.id).first()).n, 10);
+}
+
 test('local session devices, durable app expiry and account isolation', { timeout: 120000 }, async () => {
   const dir = mkdtempSync(join(tmpdir(), 'whisper-session-test-'));
   let app = await createWhisperServer({ port: 0, dataDir: dir });
@@ -122,7 +164,7 @@ test('local session devices, durable app expiry and account isolation', { timeou
     const before = app.db.prepare('SELECT COUNT(*) AS n FROM sessions').get().n;
     await app.close(); app = await createWhisperServer({ port: 0, dataDir: dir });
     assert.equal(app.db.prepare('SELECT COUNT(*) AS n FROM sessions').get().n, before);
-    assert.equal(app.db.prepare('SELECT COUNT(*) AS n FROM session_devices').get().n, 8);
+    assert.equal(app.db.prepare('SELECT COUNT(*) AS n FROM session_devices').get().n, before);
     const resumed = await fetch(app.localUrl + '/api/account/me', { headers: { Cookie: restartLogin.cookie } });
     assert.equal(resumed.status, 200);
     assert.equal((await resumed.json()).id, restartLogin.data.id);
@@ -131,5 +173,53 @@ test('local session devices, durable app expiry and account isolation', { timeou
 
 test('Workers D1 session devices preserve legacy compatibility and revocation', { timeout: 120000 }, async () => {
   const f = await cloudFixture();
-  try { await exercise(f, true); } finally { await f.close(); }
+  try { await exercise(f, true); await historyExercise(f); } finally { await f.close(); }
+});
+
+test('local login history retains only the latest ten successful logins after logout', { timeout: 120000 }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'whisper-history-test-'));
+  const app = await createWhisperServer({ port: 0, dataDir: dir });
+  try { await historyExercise({ url: app.localUrl, db: localStore(app.db) }); }
+  finally { await app.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('0004 preserves existing data and the 0.5.4 session SQL contract', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    db.exec('PRAGMA foreign_keys=ON');
+    for (const file of ['0001_initial.sql', '0002_accounts.sql', '0003_session_devices.sql']) {
+      db.exec(readFileSync(new URL('../cloud/migrations/' + file, import.meta.url), 'utf8'));
+    }
+    const now = Date.now();
+    for (const id of ['a', 'b']) db.prepare('INSERT INTO users(id,username,public_key,salt,vault_nonce,vault_cipher,auth_salt,auth_hash,created_at) VALUES(?,?,?,?,?,?,?,?,?)')
+      .run(id, 'synthetic_' + id, 'public', 'salt', 'nonce', 'encrypted-vault', 'auth-salt', 'synthetic-verifier', now);
+    db.prepare('INSERT INTO conversations(id,a,b,created_at,updated_at) VALUES(?,?,?,?,?)').run('conversation', 'a', 'b', now, now);
+    db.prepare("INSERT INTO messages(id,conversation_id,sender_id,type,nonce,ciphertext,created_at,expires_at) VALUES(?,?,?,'text',?,?,?,?)")
+      .run('message', 'conversation', 'a', 'nonce', 'synthetic-ciphertext', now, now + 60000);
+    const insertSession = (token, id, at, expiry) => {
+      db.prepare('INSERT INTO sessions(token_hash,user_id,created_at,expires_at,credential_version) VALUES(?,?,?,?,?)').run(token, 'a', at, expiry, 1);
+      db.prepare('INSERT INTO session_devices(token_hash,public_id,method,device,ip) SELECT token_hash,?,?,?,? FROM sessions WHERE token_hash=?')
+        .run(id, 'web', 'Synthetic browser', '192.0.2.1', token);
+    };
+    insertSession('synthetic-old-hash', 'old-public-id', now, now + 43200000);
+    const snapshot = () => Object.fromEntries(['users', 'sessions', 'session_devices', 'conversations', 'messages', 'storage_totals'].map(table => [table, db.prepare(`SELECT * FROM ${table}`).all()]));
+    const before = snapshot(), columns = db.prepare('PRAGMA table_info(sessions)').all();
+    db.exec('BEGIN');
+    db.exec(readFileSync(new URL('../cloud/migrations/0004_login_history.sql', import.meta.url), 'utf8'));
+    db.exec('COMMIT');
+    assert.deepEqual(snapshot(), before);
+    assert.deepEqual(db.prepare('PRAGMA table_info(sessions)').all(), columns);
+    assert.equal(db.prepare('SELECT id FROM login_history').get().id, 'old-public-id');
+    assert.ok(!JSON.stringify(db.prepare('SELECT * FROM login_history').all()).includes('synthetic-old-hash'));
+    insertSession('synthetic-new-hash', 'new-public-id', now + 1, now + 43200000);
+    db.prepare('DELETE FROM sessions WHERE token_hash=?').run('synthetic-new-hash');
+    assert.equal(db.prepare('SELECT end_reason FROM login_history WHERE id=?').get('new-public-id').end_reason, 'revoked');
+    insertSession('synthetic-expired-hash', 'expired-public-id', now - 60000, now - 1);
+    db.prepare('DELETE FROM sessions WHERE token_hash=?').run('synthetic-expired-hash');
+    const expired = db.prepare('SELECT ended_at,end_reason FROM login_history WHERE id=?').get('expired-public-id');
+    assert.equal(expired.end_reason, 'expired'); assert.equal(expired.ended_at, now - 1);
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM session_devices').get().n, 1);
+    assert.deepEqual(db.prepare('SELECT * FROM users').all(), before.users);
+    assert.deepEqual(db.prepare('SELECT * FROM messages').all(), before.messages);
+  } finally { db.close(); }
 });
