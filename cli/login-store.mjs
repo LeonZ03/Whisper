@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import { mkdir, readFile, writeFile, rename, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
+import { LinuxKeyring } from './linux-keyring.mjs';
 
 // Fixed helper source only; secrets travel in pipes, never command arguments,
 // environment variables, PowerShell history, temporary plaintext files or logs.
@@ -27,11 +28,15 @@ function protect(operation, bytes, origin) {
   });
 }
 export class ProtectedLoginStore {
-  constructor(directory) { this.directory = directory; this.pending = Promise.resolve(); this.epoch = 0; }
+  constructor(directory, { platform = process.platform, keyring } = {}) {
+    this.directory = directory; this.pending = Promise.resolve(); this.epoch = 0; this.platform = platform;
+    this.keyring = platform === 'linux' ? keyring || new LinuxKeyring(directory) : null;
+  }
   sequence(task) { const result = this.pending.then(task); this.pending = result.catch(() => {}); return result; }
-  path(origin) { return join(this.directory, `login-${createHash('sha256').update(origin).digest('hex')}.dpapi`); }
+  path(origin) { return join(this.directory, `login-${createHash('sha256').update(origin).digest('hex')}.${this.keyring ? 'keyring' : 'dpapi'}`); }
   async available() {
-    if (process.platform !== 'win32') return false;
+    if (this.keyring) return this.keyring.available();
+    if (this.platform !== 'win32') return false;
     const probe = Buffer.from('whisper-storage-check');
     try { const sealed = await protect('Protect', probe, 'probe'); const opened = await protect('Unprotect', sealed, 'probe'); const ok = opened.equals(probe); opened.fill(0); return ok; }
     catch { return false; } finally { probe.fill(0); }
@@ -41,25 +46,40 @@ export class ProtectedLoginStore {
     return this.sequence(async () => {
       const bytes = Buffer.from(JSON.stringify({ v: 1, origin, ...identity }));
       const path = this.path(origin), temporary = `${path}.${randomUUID()}.tmp`;
+      let sealed, previous, activated = false;
       try {
-        const sealed = await protect('Protect', bytes, origin);
+        if (this.platform !== 'win32' && !this.keyring) throw Error('当前平台无法保护保存登录。');
+        if (this.keyring) previous = await readFile(path).catch(error => { if (error.code !== 'ENOENT') throw error; });
+        sealed = this.keyring ? await this.keyring.seal(bytes, origin) : await protect('Protect', bytes, origin);
         if (ticket !== this.epoch) return false;
-        await mkdir(this.directory, { recursive: true });
+        await mkdir(this.directory, { recursive: true, mode: 0o700 });
         await writeFile(temporary, sealed, { flag: 'wx', mode: 0o600 });
         if (ticket !== this.epoch) return false;
-        await rename(temporary, path); return true;
-      } finally { bytes.fill(0); await unlink(temporary).catch(() => {}); }
+        await rename(temporary, path); activated = true; return true;
+      } finally {
+        bytes.fill(0); await unlink(temporary).catch(() => {});
+        if (this.keyring && (activated ? previous : sealed)) await this.keyring.forget(activated ? previous : sealed, origin).catch(() => {});
+      }
     });
   }
   load(origin) {
     return this.sequence(async () => {
       let sealed;
       try { sealed = await readFile(this.path(origin)); } catch (error) { if (error.code === 'ENOENT') return null; throw Error('保存的登录不可读取。'); }
-      if (sealed.length > 32768 || process.platform !== 'win32') throw Error('保存的登录不可读取。');
-      const bytes = await protect('Unprotect', sealed, origin);
+      if (sealed.length > 32768 || (this.platform !== 'win32' && !this.keyring)) throw Error('保存的登录不可读取。');
+      const bytes = this.keyring ? await this.keyring.open(sealed, origin) : await protect('Unprotect', sealed, origin);
       try { const result = JSON.parse(bytes.toString()); if (result.v !== 1 || result.origin !== origin) throw Error(); return result; }
       catch { throw Error('保存的登录不可读取。'); } finally { bytes.fill(0); }
     });
   }
-  clear(origin) { this.epoch++; return this.sequence(async () => { try { await unlink(this.path(origin)); } catch (error) { if (error.code !== 'ENOENT') throw Error('保存的登录无法清除。'); } }); }
+  clear(origin) {
+    this.epoch++;
+    return this.sequence(async () => {
+      const path = this.path(origin); let sealed;
+      if (this.keyring) sealed = await readFile(path).catch(() => null);
+      try { await unlink(path); } catch (error) { if (error.code !== 'ENOENT') throw Error('保存的登录无法清除。'); }
+      // Unlink first: even an unavailable/locked keyring must not revive logout.
+      if (this.keyring && sealed) await this.keyring.forget(sealed, origin).catch(() => {});
+    });
+  }
 }

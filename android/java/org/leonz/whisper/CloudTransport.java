@@ -34,10 +34,12 @@ final class CloudTransport {
         if (path == null || method == null) return false;
         String uuid = "[0-9a-f-]{36}";
         if ("GET".equals(method)) return path.equals("/api/health") || path.equals("/api/account/me") || path.equals("/api/account/sessions")
+            || path.matches("/api/sync(?:\\?(?:conversationId=" + uuid + "(?:&cursor=[0-9]{1,16})?|cursor=[0-9]{1,16}))?")
             || path.matches("/api/auth/salt\\?username=[a-z0-9_]{3,24}") || path.equals("/api/conversations")
             || path.matches("/api/conversations/" + uuid + "/messages")
             || path.matches("/api/admin/(members|logins)(\\?before=[0-9]+)?");
         if ("POST".equals(method)) return path.matches("/api/auth/(login|logout|register|recover)")
+            || path.equals("/api/realtime/ticket")
             || path.equals("/api/account/password") || path.equals("/api/conversations")
             || path.matches("/api/conversations/" + uuid + "/(messages|clear)")
             || path.matches("/api/messages/" + uuid + "/open")

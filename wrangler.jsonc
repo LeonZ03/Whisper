@@ -9,7 +9,7 @@
   "routes": [{"pattern":"whisper.leonz03.dpdns.org","custom_domain":true}],
   "assets": {
     "directory": ".cloud/public", "binding": "ASSETS",
-    "run_worker_first": ["/api/*", "/downloads/whisper-cli-windows-x64.zip"]
+      "run_worker_first": ["/api/*", "/downloads/whisper-cli-windows-x64.zip", "/downloads/whisper-cli-linux-x64.tar.gz", "/downloads/whisper-cli-linux-arm64.tar.gz"]
   },
   "build": {"command":"npm run build:cloud"},
   "vars": {
@@ -20,10 +20,15 @@
     "binding":"DB", "database_name":"whisper-production",
     "database_id":"4bc65945-ecdc-459d-b522-f18525bd8195", "migrations_dir":"cloud/migrations"
   }],
+  "durable_objects":{"bindings":[{"name":"REALTIME","class_name":"RealtimeHub"}]},
+  "migrations":[{"tag":"realtime-v1","new_sqlite_classes":["RealtimeHub"]}],
   "ratelimits": [
     {"name":"API_LIMIT","namespace_id":"310100","simple":{"limit":300,"period":60}},
     {"name":"AUTH_LIMIT","namespace_id":"310101","simple":{"limit":20,"period":60}},
-    {"name":"SEND_LIMIT","namespace_id":"310102","simple":{"limit":90,"period":60}}
+    {"name":"SEND_LIMIT","namespace_id":"310102","simple":{"limit":90,"period":60}},
+    {"name":"CONNECT_LIMIT","namespace_id":"310103","simple":{"limit":30,"period":60}},
+    {"name":"COARSE_LIMIT","namespace_id":"310104","simple":{"limit":1200,"period":60}},
+    {"name":"CONNECT_IP_LIMIT","namespace_id":"310105","simple":{"limit":240,"period":60}}
   ],
   "triggers":{"crons":["* * * * *"]},
   "observability":{"enabled":false}, "send_metrics":false

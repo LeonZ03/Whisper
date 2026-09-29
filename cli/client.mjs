@@ -3,6 +3,7 @@ import { dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { ready, b64, unb64, wipe, deriveCredentials, unlockIdentity, encryptMessage, decryptMessage, safetyCode } from '../src/crypto.mjs';
 import { prepareEnrollment, preparePasswordChange } from '../src/account-client.mjs';
+import { RealtimeConnection } from '../src/realtime-client.mjs';
 
 export const TTL = Object.freeze({ '1m': 60000, '1h': 3600000, '24h': 86400000, '7d': 604800000 });
 export function normalizeServer(value) {
@@ -62,7 +63,8 @@ export class WhisperClient {
     this.fetchImpl = fetchImpl; this.timeoutMs = timeoutMs; this.cookie = '';
     this.user = null; this.selected = null; this.conversations = []; this.messages = [];
     this.loginStore = loginStore; this.persistentLogin = false; this.loginNotice = ''; this.loginEpoch = 0;
-    this.pollIntervalMs = 2000; this.ttl = '24h'; this.connected = false; this.supportsHistory = false; this.hasOlder = false; this.historyComplete = false;
+    this.pollIntervalMs = 2000; this.ttl = '24h'; this.connected = false; this.supportsHistory = false; this.supportsRealtime = false; this.hasOlder = false; this.historyComplete = false;
+    this.syncCursor = null; this.syncConversationId = null; this.syncEpoch = 0; this.syncTask = null; this.syncAgain = false; this.realtime = null; this.historyExpanded = false;
   }
   async request(path, method = 'GET', body, timeoutMs = this.timeoutMs) {
     if (!path.startsWith('/api/')) throw new Error('无效的 API 路径。');
@@ -71,10 +73,10 @@ export class WhisperClient {
     try {
       response = await this.fetchImpl(this.server + path, {
         method, redirect: 'error', cache: 'no-store', signal: AbortSignal.timeout(timeoutMs),
-        headers: { Accept: 'application/json', 'X-Whisper-Client': 'cli', 'X-Whisper-Device': `CLI / ${process.platform === 'win32' ? 'Windows' : process.platform}`.slice(0, 128), 'User-Agent': `WhisperCLI/Node (${process.platform})`.slice(0, 128), ...(this.cookie ? { Cookie: this.cookie } : {}), ...(method === 'GET' ? {} : { 'Content-Type': 'application/json', Origin: this.server, 'X-Whisper-Request': '1' }) },
+        headers: { Accept: 'application/json', 'X-Whisper-Client': 'cli', 'X-Whisper-Device': `CLI / ${process.platform === 'win32' ? 'Windows' : process.platform === 'linux' ? 'Linux' : process.platform}`.slice(0, 128), 'User-Agent': `WhisperCLI/Node (${process.platform})`.slice(0, 128), ...(this.cookie ? { Cookie: this.cookie } : {}), ...(method === 'GET' ? {} : { 'Content-Type': 'application/json', Origin: this.server, 'X-Whisper-Request': '1' }) },
         body: method === 'GET' ? undefined : JSON.stringify(body ?? {}),
       });
-    } catch { this.connected = false; throw new Error('连接中断或请求超时。检查服务地址；本机先运行 start.cmd。'); }
+    } catch { this.connected = false; throw new Error('连接中断或请求超时。请检查网络和服务地址。'); }
     const result = await response.json().catch(() => null);
     if (!result) throw new Error('服务器返回了无效 JSON；请确认是 Whisper 服务。');
     if (!response.ok) {
@@ -91,6 +93,7 @@ export class WhisperClient {
     const result = await this.request('/api/health');
     if (result.app !== 'Whisper' || result.ok !== true) throw new Error('这个地址不是兼容的 Whisper 服务。');
     this.supportsHistory = result.capabilities?.includes('message-history-v1') === true;
+    this.supportsRealtime = result.capabilities?.includes('realtime-sync-v1') === true;
     this.pollIntervalMs = result.environment === 'cloud' ? Math.max(2000, Number(result.pollIntervalMs) || 2000) : 2000;
     return result;
   }
@@ -154,6 +157,7 @@ export class WhisperClient {
     return { blocked: pin.publicKey !== peer.publicKey, verified: pin.publicKey === peer.publicKey && pin.verified === true };
   }
   async sync() {
+    if (this.supportsRealtime) return this.syncIncremental();
     this.requireUser(); const list = await this.request('/api/conversations');
     if (!Array.isArray(list)) throw new Error('会话列表格式无效。');
     this.conversations = list; if (!this.selected) return;
@@ -179,6 +183,101 @@ export class WhisperClient {
     if (recent.length < 200) this.historyComplete = true;
     this.hasOlder = this.supportsHistory && !this.historyComplete && this.messages.length > 0;
   }
+  resetSyncCursor() { this.syncEpoch++; this.syncCursor = null; this.syncConversationId = this.selected?.id || null; }
+  async syncIncremental() {
+    if (this.syncTask) {
+      const active = this.syncTask; this.syncAgain = true;
+      await active;
+      if (!this.user) return false;
+      if (this.syncTask && this.syncTask !== active) return this.syncTask;
+      if (this.syncTask === active) return active;
+      this.syncAgain = false;
+      return this.syncIncremental();
+    }
+    const task = this.applySyncPages(); this.syncTask = task;
+    try {
+      const result = await task;
+      if (this.syncAgain && this.user) {
+        this.syncAgain = false;
+        if (this.syncTask === task) this.syncTask = null;
+        return await this.syncIncremental();
+      }
+      return result;
+    } finally {
+      if (this.syncTask === task) this.syncTask = null;
+      if (!this.syncTask) this.syncAgain = false;
+    }
+  }
+  async applySyncPages() {
+    this.requireUser();
+    const user = this.user, userId = user.id, server = this.server, conversationId = this.selected?.id || null;
+    if (conversationId !== this.syncConversationId) { this.syncCursor = null; this.syncConversationId = conversationId; this.syncEpoch++; this.historyExpanded = false; }
+    const epoch = this.syncEpoch;
+    const current = () => this.user === user && this.user?.id === userId && this.server === server && this.syncEpoch === epoch && (this.selected?.id || null) === conversationId;
+    let more = true, applied = false;
+    while (more && current()) {
+      const params = new URLSearchParams();
+      if (conversationId) params.set('conversationId', conversationId);
+      if (this.syncCursor !== null) params.set('cursor', String(this.syncCursor));
+      const payload = await this.request(`/api/sync${params.size ? `?${params}` : ''}`);
+      if (!current()) return false;
+      if (payload?.version !== 1 || !Number.isSafeInteger(payload.cursor) || !Array.isArray(payload.conversations) || !Array.isArray(payload.removedConversations) || !Array.isArray(payload.messages) || !Array.isArray(payload.removed) || typeof payload.reset !== 'boolean' || typeof payload.more !== 'boolean') throw new Error('实时同步响应格式无效。');
+      if (payload.more && payload.cursor === this.syncCursor) throw new Error('实时同步游标没有前进。');
+      if (payload.conversationId !== null && payload.conversationId !== conversationId) throw new Error('实时同步会话不匹配。');
+      if (payload.reset) {
+        this.conversations = payload.conversations;
+      } else {
+        const conversations = new Map(this.conversations.map((item) => [item.id, item]));
+        for (const id of payload.removedConversations) conversations.delete(id);
+        for (const item of payload.conversations) conversations.set(item.id, item);
+        this.conversations = [...conversations.values()];
+      }
+      const selected = conversationId ? this.conversations.find((item) => item.id === conversationId) : null;
+      if (conversationId && (!selected || payload.conversationId === null)) {
+        this.selected = null; this.messages = []; this.hasOlder = false; this.historyComplete = false;
+        this.syncConversationId = null; this.syncCursor = null; this.syncEpoch++; this.historyExpanded = false;
+        return true;
+      }
+      if (selected) this.selected = selected;
+      if (conversationId && !this.trust().blocked) {
+        if (payload.reset) {
+          this.messages = payload.messages.filter((message) => message.expiresAt > Date.now());
+          this.historyComplete = payload.messages.length < 200;
+          this.historyExpanded = false;
+        } else {
+          const messages = new Map(this.messages.map((message) => [message.id, message]));
+          for (const id of payload.removed) messages.delete(id);
+          for (const message of payload.messages) {
+            if (message.expiresAt > Date.now()) messages.set(message.id, message);
+            else messages.delete(message.id);
+          }
+          this.messages = [...messages.values()].sort((a, b) => a.seq - b.seq);
+          if (!this.historyExpanded && this.messages.length > 200) this.messages = this.messages.slice(-200);
+          if (!this.historyExpanded && this.messages.length >= 200) this.historyComplete = false;
+        }
+        this.hasOlder = this.supportsHistory && !this.historyComplete && this.messages.length > 0;
+      } else if (conversationId) this.messages = [];
+      if (!current()) return false;
+      this.syncCursor = payload.cursor; more = payload.more; applied = true;
+    }
+    return applied;
+  }
+  startRealtime({ onChange = () => {}, onState = () => {}, onExpired = () => {} } = {}) {
+    if (!this.supportsRealtime || !this.user || typeof globalThis.WebSocket !== 'function') return false;
+    this.stopRealtime();
+    const epoch = this.loginEpoch, user = this.user, server = this.server;
+    const url = new URL('/api/realtime', server); url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+    this.realtime = new RealtimeConnection({
+      request: async (path, method, body) => {
+        try { return await this.request(path, method, body); }
+        catch (error) { if (error.status === 401) onExpired(); throw error; }
+      }, url: url.href,
+      onChange: async () => { if (this.loginEpoch === epoch && this.user === user && this.server === server) await onChange(); },
+      onState: (state) => { if (this.loginEpoch === epoch && this.user === user && this.server === server) onState(state); },
+    });
+    this.realtime.start(); return true;
+  }
+  stopRealtime() { this.realtime?.stop(); this.realtime = null; }
   async loadOlder() {
     this.requireChat();
     if (!this.supportsHistory) throw new Error('服务器尚未支持历史分页，请服务提供者更新并重启服务。');
@@ -190,13 +289,14 @@ export class WhisperClient {
     if (this.selected?.id !== id || this.user !== user) return 0;
     const previous = page.messages.filter((m) => m.expiresAt > Date.now());
     this.messages = [...new Map([...previous, ...this.messages].map((m) => [m.id, m])).values()].sort((a, b) => a.seq - b.seq);
+    if (page.messages.length) this.historyExpanded = true;
     this.historyComplete = !page.hasMore; this.hasOlder = page.hasMore;
     return previous.length;
   }
   async chat(username) {
     this.requireUser();
     const conversation = await this.request('/api/conversations', 'POST', { username: usernameOf(username) });
-    this.selected = conversation; this.messages = []; this.historyComplete = false; this.hasOlder = false; await this.sync(); return conversation;
+    this.selected = conversation; this.messages = []; this.historyComplete = false; this.hasOlder = false; this.historyExpanded = false; this.resetSyncCursor(); await this.sync(); return conversation;
   }
   async send(text, { onPending } = {}) {
     this.requireChat(); if (!text.trim()) return;
@@ -244,7 +344,13 @@ export class WhisperClient {
     // Even an offline first launch must not erase an existing vault on /quit.
     this.persistentLogin = true;
     try { saved = await this.loginStore.load(this.server); }
-    catch { await this.loginStore.clear(this.server); this.loginNotice = '保存的登录无法解锁，请重新 /login。'; return false; }
+    catch (error) {
+      if (epoch !== this.loginEpoch) return false;
+      if (error.code === 'LOGIN_PROTECTION_UNAVAILABLE') {
+        this.loginNotice = '系统密钥环暂不可用；解锁后 /refresh 重试，或 /login 临时登录。'; return false;
+      }
+      await this.loginStore.clear(this.server); this.loginNotice = '保存的登录无法解锁，请重新 /login。'; return false;
+    }
     if (!saved || epoch !== this.loginEpoch) { if (!saved) this.persistentLogin = false; return false; }
     try {
       await ready;
@@ -264,7 +370,7 @@ export class WhisperClient {
       throw error;
     } finally { wipe(key); saved = null; }
   }
-  lock() { this.loginEpoch++; wipe(this.user?.secretKey); this.user = null; this.cookie = ''; this.selected = null; this.conversations = []; this.messages = []; this.hasOlder = false; this.historyComplete = false; }
+  lock() { this.stopRealtime(); this.loginEpoch++; wipe(this.user?.secretKey); this.user = null; this.cookie = ''; this.selected = null; this.conversations = []; this.messages = []; this.hasOlder = false; this.historyComplete = false; this.historyExpanded = false; this.syncAgain = false; this.resetSyncCursor(); }
   async suspend() { if (this.persistentLogin || (!this.cookie && this.loginStore)) this.lock(); else await this.logout(); }
   async logout() {
     const origin = this.server, cookie = this.cookie;

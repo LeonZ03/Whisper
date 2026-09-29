@@ -5,6 +5,9 @@ import android.app.AlertDialog;
 import android.content.Intent;
 import android.graphics.Color;
 import android.net.Uri;
+import android.net.ConnectivityManager;
+import android.net.Network;
+import android.net.NetworkCapabilities;
 import android.os.Build;
 import android.os.Bundle;
 import android.view.View;
@@ -40,6 +43,10 @@ public final class MainActivity extends Activity {
     private final AtomicInteger sessionEpoch = new AtomicInteger();
     private ValueCallback<Uri[]> fileCallback;
     private boolean destroyed;
+    private boolean foreground;
+    private boolean networkReady;
+    private ConnectivityManager connectivity;
+    private ConnectivityManager.NetworkCallback networkCallback;
     private static final int IMAGE_PICKER = 71;
     private static final Map<String, String> ASSETS = new HashMap<>();
     static {
@@ -90,7 +97,7 @@ public final class MainActivity extends Activity {
                 try {
                     Map<String, String> headers = new HashMap<>();
                     headers.put("Cache-Control", "no-store"); headers.put("X-Content-Type-Options", "nosniff");
-                    headers.put("Content-Security-Policy", "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' blob:; connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'");
+                    headers.put("Content-Security-Policy", "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' blob:; connect-src wss://whisper.leonz03.dpdns.org/api/realtime; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'");
                     InputStream stream = getAssets().open("/".equals(path) ? "index.html" : path.substring(1));
                     return new WebResourceResponse(ASSETS.get(path), "UTF-8", 200, "OK", headers, stream);
                 } catch (Exception ignored) { return denied(); }
@@ -124,18 +131,32 @@ public final class MainActivity extends Activity {
             return insets;
         });
         web.loadUrl(ASSET_ORIGIN + "/index.html");
+        connectivity = (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
+        networkCallback = new ConnectivityManager.NetworkCallback() {
+            @Override public void onCapabilitiesChanged(Network network, NetworkCapabilities capabilities) {
+                boolean ready = capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED);
+                runOnUiThread(() -> {
+                    boolean restored = ready && !networkReady; networkReady = ready;
+                    if (foreground && restored) js("globalThis.whisperAndroidNetworkRestored?.()");
+                });
+            }
+            @Override public void onLost(Network network) {
+                runOnUiThread(() -> { networkReady = false; if (foreground) js("globalThis.whisperAndroidNetworkLost?.()"); });
+            }
+        };
+        connectivity.registerDefaultNetworkCallback(networkCallback);
     }
     private static WebResourceResponse denied() {
         return new WebResourceResponse("text/plain", "UTF-8", 403, "Blocked", new HashMap<>(), new ByteArrayInputStream(new byte[0]));
     }
     private void js(String script) { if (!destroyed && web != null) web.evaluateJavascript(script, null); }
     @Override public void onBackPressed() { js("globalThis.whisperAndroidBack?.()"); }
-    @Override protected void onPause() { js("globalThis.whisperAndroidPause?.()"); super.onPause(); }
+    @Override protected void onPause() { foreground = false; js("globalThis.whisperAndroidPause?.()"); super.onPause(); }
     @Override protected void onStop() {
         // onPause clears visible content; the device-bound login survives backgrounding.
         super.onStop();
     }
-    @Override protected void onResume() { super.onResume(); if (web != null) js("globalThis.whisperAndroidResume?.()"); }
+    @Override protected void onResume() { super.onResume(); foreground = true; if (web != null) js("globalThis.whisperAndroidResume?.()"); }
     @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
         if (requestCode == IMAGE_PICKER && fileCallback != null) {
@@ -146,6 +167,7 @@ public final class MainActivity extends Activity {
     }
     @Override protected void onSaveInstanceState(Bundle state) { /* No session or form persistence. */ }
     @Override protected void onDestroy() {
+        if (connectivity != null && networkCallback != null) connectivity.unregisterNetworkCallback(networkCallback);
         destroyed = true; sessionEpoch.incrementAndGet(); transport.clearSession(); requests.shutdownNow();
         if (fileCallback != null) { fileCallback.onReceiveValue(null); fileCallback = null; }
         web.removeJavascriptInterface("WhisperNative"); web.clearCache(true); web.clearHistory(); web.destroy(); web = null;

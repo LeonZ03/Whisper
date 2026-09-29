@@ -95,6 +95,18 @@ test('actual Workers/D1: authentication, E2EE, atomic image claim, cleanup and s
     const bytes=Buffer.from(await binary.arrayBuffer()),manifest=JSON.parse(readFileSync('.cloud/public/downloads/manifest.json'));
     assert.equal(createHash('sha256').update(bytes).digest('hex'),manifest.sha256);
     assert.equal(bytes.length,manifest.bytes);
+    for (const platform of ['linux-x64','linux-arm64']) {
+      const release=JSON.parse(readFileSync(`.cloud/public/downloads/manifest-${platform}.json`));
+      const archive=await fetch(`${f.url}/downloads/${release.filename}`);
+      assert.equal(archive.status,200);
+      assert.equal(archive.headers.get('content-type'),'application/gzip');
+      assert.equal(archive.headers.get('content-length'),String(release.bytes));
+      const archiveBytes=Buffer.from(await archive.arrayBuffer());
+      assert.equal(archiveBytes.length,release.bytes);
+      assert.equal(createHash('sha256').update(archiveBytes).digest('hex'),release.sha256);
+      const head=await fetch(`${f.url}/downloads/${release.filename}`,{method:'HEAD'});
+      assert.equal(head.status,200);assert.equal(head.headers.get('content-length'),String(release.bytes));
+    }
     await again.logout();await assert.rejects(again.request('/api/conversations'),e=>e.status===401);
   }finally{await Promise.all(clients.map(c=>c.logout().catch(()=>{})));await f.close();}
 });

@@ -6,6 +6,7 @@ import { createWebLoginStore } from './web-login-store.mjs';
 import { accountUI } from './account-ui.mjs';
 import { prepareEnrollment, validateNewPassword } from './account-client.mjs';
 import { requestAPI as api } from './api-transport.mjs';
+import { RealtimeConnection } from './realtime-client.mjs';
 const $ = (id) => document.getElementById(id);
 const android = Boolean(globalThis.whisperAndroidRequest);
 const webLoginStore = android ? null : createWebLoginStore();
@@ -29,8 +30,11 @@ function mobileView(view) {
 for (const label of document.querySelectorAll('[data-app-version]')) label.textContent = `v${__APP_VERSION__}`;
 let self = null, selected = null, conversations = [], messages = [], mode = 'login';
 let syncing = false, generation = 0, toastTimer, signature = '', imageTimer, imageUrl, viewingId, safetyPeer;
+globalThis.whisperRequestGeneration = () => generation;
 let blocked = false, sending = false;
 let cloudMode = false, pollIntervalMs = 1500, nextPollAt = 0;
+let realtimeSupported = false, realtime = null, syncCursor = null, deltaTask = null, deltaPending = false, pollTimer;
+let suspendedReading = null;
 let androidPaused = false;
 let restoringLogin = false, savedLoginPending = false;
 let cancelImageDissolve = null;
@@ -41,6 +45,23 @@ const lifecycle = new MessageLifecycle($('messages'), (id) => {
   if (viewingId === id) closeImage(true);
 });
 function clearMessageView() { lifecycle.clear(); messageCards.clear(); for (const preview of sendPreviews.values()) clearTimeout(preview.timer); sendPreviews.clear(); messages = []; signature = ''; }
+function suspendMessageView() {
+  suspendedReading = { top: $('messages').scrollTop, focused: document.activeElement === $('message-input') };
+  const encrypted = messages, shells = [...messageCards];
+  for (const [, card] of shells) card.element.replaceChildren();
+  clearMessageView(); messages = encrypted;
+  for (const [id, card] of shells) { card.key = ''; messageCards.set(id, card); $('messages').append(card.element); }
+}
+function stopRealtime() { realtime?.stop(); realtime = null; }
+function startRealtime() {
+  if (!realtimeSupported || self?.role !== 'member' || self.mustChangePassword || androidPaused || webPaused || document.hidden || navigator.onLine === false) return;
+  if (realtime) { realtime.start(); return; }
+  const url = android ? 'wss://whisper.leonz03.dpdns.org/api/realtime' : new URL('/api/realtime', location.href);
+  if (!android) url.protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  realtime = new RealtimeConnection({ request: api, url: String(url), onChange: () => sync(),
+    onState: state => { if (self) connection(state === 'open'); } });
+  realtime.start();
+}
 const pins = () => {
   try {
     const key = `whisper:public-key-pins:${self.id}:${self.publicKey}`;
@@ -150,6 +171,7 @@ $('auth-form').onsubmit = async (event) => {
   }
 };
 async function enterUser(user, secretKey, activationCode = '', save = false) {
+  stopRealtime(); syncCursor = null; suspendedReading = null;
   self = { id: user.id, username: user.username, publicKey: user.publicKey, secretKey, role: user.role, mustChangePassword: user.mustChangePassword, activationCode: user.mustChangePassword ? activationCode : '' };
   generation++; $('auth-screen').hidden = true; $('chat-screen').hidden = false; hideRestoreNotice();
   $('self-name').textContent = '@' + self.username;
@@ -169,6 +191,7 @@ async function enterUser(user, secretKey, activationCode = '', save = false) {
   await accountControls.enter(self);
   webAccountUI?.enter(self);
   if (self?.role === 'member') await sync();
+  startRealtime();
 }
 function hideRestoreNotice() {
   $('login-restore-status')?.remove(); $('retry-login')?.remove(); $('restore-logout')?.remove();
@@ -221,6 +244,7 @@ async function restoreSavedLogin() {
   }
 }
 function lock({ keepSaved = false, broadcast = true } = {}) {
+  stopRealtime(); syncCursor = null; deltaPending = false; suspendedReading = null;
   authAttempt++;
   // Closing a page preserves a seal already being written for the login that
   // just succeeded. Explicit logout still cancels and clears queued writes.
@@ -258,7 +282,7 @@ $('logout').onclick = async () => {
   // Native transport obtains the cookie from its vault. Revoke it before
   // clearing that vault; browser HttpOnly cookies survive the memory lock.
   if (!android) lock();
-  else { authAttempt++; generation++; closeImage(); clearMessageView(); }
+  else { authAttempt++; generation++; stopRealtime(); closeImage(); clearMessageView(); }
   $('auth-submit').disabled = true;
   try { await api('/api/auth/logout', 'POST'); } catch {}
   finally { if (android) lock(); $('auth-submit').disabled = false; $('logout').disabled = false; }
@@ -287,7 +311,7 @@ function checkTrust() {
   $('send').disabled = blocked || sending; $('image-button').disabled = blocked || sending;
 }
 async function selectConversation(c) {
-  generation++; closeImage(); selected = c; messages = []; signature = ''; $('message-input').value = '';
+  generation++; syncCursor = null; suspendedReading = null; closeImage(); selected = c; messages = []; signature = ''; $('message-input').value = '';
   $('empty-state').hidden = true; $('conversation-panel').hidden = false;
   $('peer-title').textContent = c.peer.username; $('peer-avatar').textContent = c.peer.username[0];
   clearMessageView(); checkTrust(); renderConversations();
@@ -304,6 +328,7 @@ $('new-chat-form').onsubmit = async (event) => {
 };
 function connection(ok) { $('connection').textContent = ok ? '● 已连接' : '● 连接中断'; $('connection').classList.toggle('offline', !ok); }
 async function refreshMessages(prefetched) {
+  if (realtimeSupported) return sync();
   if (!self || !selected) return;
   const current = selected.id, epoch = generation;
   const result = prefetched ?? await api(`/api/conversations/${current}/messages`);
@@ -316,7 +341,8 @@ async function refreshMessages(prefetched) {
   connection(true);
 }
 async function sync(force = true) {
-  if (androidPaused) return;
+  if (androidPaused || webPaused) return;
+  if (realtimeSupported) return force ? syncDelta() : undefined;
   if (!force && ((cloudMode && document.hidden) || Date.now() < nextPollAt)) return;
   nextPollAt = Date.now() + pollIntervalMs;
   if (!self || self.role !== 'member' || syncing) return; syncing = true; const epoch = generation;
@@ -338,10 +364,85 @@ async function sync(force = true) {
     if (error.status === 401) { lock(); toast('登录已过期，请重新登录。'); }
   } finally { syncing = false; }
 }
+function applyDelta(result) {
+  const priorList = JSON.stringify(conversations);
+  const removedConversations = new Set(result.removedConversations);
+  const list = new Map((result.reset ? [] : conversations).map(c => [c.id, c]));
+  for (const id of removedConversations) list.delete(id);
+  for (const c of result.conversations) list.set(c.id, c);
+  conversations = [...list.values()].sort((a, b) => (b.updatedAt ?? b.createdAt ?? 0) - (a.updatedAt ?? a.createdAt ?? 0));
+  if (selected && result.conversationId !== selected.id) {
+    closeImage(); selected = null; clearMessageView(); suspendedReading = null;
+    $('conversation-panel').hidden = true; $('empty-state').hidden = false; mobileView('conversations');
+  }
+  if (selected) {
+    const updated = conversations.find(c => c.id === selected.id);
+    if (updated) {
+      const keyChanged = updated.peer.publicKey !== selected.peer.publicKey;
+      selected = updated; checkTrust();
+      $('peer-title').textContent = selected.peer.username; $('peer-avatar').textContent = selected.peer.username[0];
+      if (keyChanged) { signature = ''; closeImage(); }
+    }
+    const removed = new Set(result.removed);
+    const merged = new Map((result.reset ? [] : messages).filter(m => !removed.has(m.id)).map(m => [m.id, m]));
+    for (const item of result.messages) {
+      // Synchronization never receives view-once image payloads.
+      merged.set(item.id, item.type === 'image' ? { ...item, ciphertext: null, nonce: null } : item);
+      removeSendPreview(item.id);
+    }
+    messages = [...merged.values()].filter(m => m.expiresAt > Date.now()).sort((a, b) => a.seq - b.seq);
+    if (viewingId && !messages.some(m => m.id === viewingId)) closeImage();
+    const sig = JSON.stringify(messages.map(m => [m.id, m.consumedAt, m.ciphertext, m.nonce, m.expiresAt, blocked]));
+    if (signature !== sig) { signature = sig; renderMessages(); }
+    if (suspendedReading) {
+      $('messages').scrollTop = suspendedReading.top;
+      if (suspendedReading.focused) $('message-input').focus({ preventScroll: true });
+      suspendedReading = null;
+    }
+  }
+  if (JSON.stringify(conversations) !== priorList) renderConversations();
+}
+function syncDelta() {
+  if (!self || self.role !== 'member' || androidPaused || webPaused || document.hidden) return Promise.resolve();
+  deltaPending = true;
+  if (deltaTask) return deltaTask;
+  deltaTask = (async () => {
+    while (deltaPending && self && self.role === 'member' && !androidPaused && !webPaused && !document.hidden) {
+      deltaPending = false;
+      const epoch = generation, user = self, current = selected?.id ?? null;
+      try {
+        let more;
+        do {
+          const params = new URLSearchParams();
+          if (current) params.set('conversationId', current);
+          if (syncCursor !== null) params.set('cursor', String(syncCursor));
+          const result = await api('/api/sync' + (params.size ? '?' + params : ''));
+          if (generation !== epoch || self !== user || (selected?.id ?? null) !== current || androidPaused || webPaused || document.hidden) break;
+          if (result.version !== 1 || !Number.isSafeInteger(result.cursor) || result.cursor < 0 ||
+              !Array.isArray(result.conversations) || !Array.isArray(result.removedConversations) || !Array.isArray(result.messages) || !Array.isArray(result.removed)) throw Error('同步响应无效。');
+          applyDelta(result);
+          // Commit only after this generation successfully applied the matching data.
+          syncCursor = result.conversationId !== current ? null : result.cursor; more = result.more === true;
+          connection(true);
+          if (selected?.id !== current && current !== null) break;
+        } while (more);
+      } catch (error) {
+        if (generation !== epoch || self !== user) continue;
+        connection(false); closeImage();
+        if (error.status === 401 || error.status === 403) { lock(); toast('登录已撤销或账号已变化，请重新登录。'); }
+      }
+    }
+  })().finally(() => { deltaTask = null; });
+  return deltaTask;
+}
 function renderMessages() {
   const box = $('messages'); const stick = box.scrollHeight - box.scrollTop - box.clientHeight < 140;
   const oldScroll = box.scrollTop;
   messages = messages.filter((m) => m.expiresAt > Date.now());
+  const present = new Set(messages.map(m => m.id));
+  for (const [id, card] of messageCards) {
+    if (!present.has(id) && !lifecycle.entries.has(id)) { card.element.replaceChildren(); card.element.remove(); messageCards.delete(id); }
+  }
   lifecycle.reconcile(new Set(messages.map((m) => m.id)), messages.length >= 200 ? messages[0].seq : 0);
   if (messages.length) box.querySelector('.messages-empty')?.remove();
   if (!messages.length && !sendPreviews.size) lifecycle.emptyState();
@@ -349,7 +450,7 @@ function renderMessages() {
     const key = JSON.stringify([m.ciphertext, m.nonce, m.expiresAt, m.consumedAt, blocked]);
     const previous = messageCards.get(m.id);
     if (previous?.key === key) continue;
-    const own = m.senderId === self.id; const article = document.createElement('article'); article.className = 'message' + (own ? ' own' : ''); article.dataset.messageId = m.id; article.dataset.seq = String(m.seq);
+    const own = m.senderId === self.id; const article = previous?.element ?? document.createElement('article'); article.replaceChildren(); article.className = 'message' + (own ? ' own' : ''); article.dataset.messageId = m.id; article.dataset.seq = String(m.seq);
     const bubble = document.createElement('div'); bubble.className = 'bubble';
     if (blocked) { bubble.textContent = '公钥变化，已阻止解密。'; }
     else if (m.type === 'text') {
@@ -357,7 +458,7 @@ function renderMessages() {
       catch { bubble.textContent = '无法解密：消息可能损坏、过期或身份不匹配。'; }
     } else {
       bubble.classList.add('image-card'); const title = document.createElement('strong'); title.textContent = m.consumedAt ? '▧ 图片已清理' : '▧ 阅后图片';
-      const desc = document.createElement('small'); desc.textContent = m.consumedAt ? '已经打开，不能再次查看' : '仅可打开一次 · 显示 10 秒'; bubble.append(title, desc);
+      const desc = document.createElement('small'); desc.textContent = m.consumedAt ? '已经打开，不能再次查看' : '仅可打开一次 · 显示 3 秒'; bubble.append(title, desc);
       if (!m.consumedAt && !own) { const open = document.createElement('button'); open.className = 'quiet'; open.textContent = '打开图片'; open.dataset.openImage = m.id; open.onclick = () => openImage(m, open); bubble.append(open); }
       else if (!m.consumedAt) { const waiting = document.createElement('small'); waiting.textContent = '等待对方查看'; bubble.append(waiting); }
     }
@@ -372,8 +473,7 @@ function renderMessages() {
     countdown.title = '到期即清理；动画不延长保留时间';
     if (m.consumedAt) { countdown.textContent = '已查看并清理'; countdown.classList.add('consumed'); }
     meta.append(time, countdown, remove); article.append(bubble, meta);
-    if (previous) { previous.element.replaceChildren(); previous.element.replaceWith(article); }
-    else box.append(article);
+    if (!previous) box.append(article);
     messageCards.set(m.id, { key, element: article });
     lifecycle.track(m.id, article, m.expiresAt, countdown, Boolean(m.consumedAt));
   }
@@ -484,7 +584,7 @@ function closeImage(animate = false) {
 $('close-image').onclick = () => closeImage(true); $('image-dialog').addEventListener('cancel', () => closeImage());
 if (android) {
   const leaveChat = (view) => {
-    generation++; closeImage(); $('safety-dialog').close(); selected = null; clearMessageView();
+    generation++; syncCursor = null; suspendedReading = null; closeImage(); $('safety-dialog').close(); selected = null; clearMessageView();
     $('message-input').value = ''; $('conversation-panel').hidden = true; $('empty-state').hidden = false;
     mobileView(view); renderConversations();
   };
@@ -513,34 +613,43 @@ if (android) {
     else if (self && $('chat-screen').dataset.view === 'my') leaveChat(self.role === 'root' ? 'admin' : 'conversations');
     else globalThis.whisperAndroidExit();
   };
-  globalThis.whisperAndroidPause = () => { androidPaused = true; generation++; closeImage(); clearMessageView(); sessionsUI.clear(); };
+  globalThis.whisperAndroidPause = () => { androidPaused = true; generation++; stopRealtime(); closeImage(); if (!suspendedReading) suspendMessageView(); sessionsUI.clear(); };
   globalThis.whisperAndroidResume = () => {
     androidPaused = false; lifecycle.tick({ animate: false });
     if (savedLoginPending) void restoreSavedLogin();
-    else { void sync(); if (self && ['my', 'devices'].includes($('chat-screen').dataset.view)) void sessionsUI.load(); }
+    else { void sync().then(startRealtime); if (self && ['my', 'devices'].includes($('chat-screen').dataset.view)) void sessionsUI.load(); }
   };
   globalThis.whisperAndroidLock = lock;
+  globalThis.whisperAndroidNetworkRestored = () => {
+    if (androidPaused) return;
+    if (savedLoginPending) void restoreSavedLogin(); else void sync().then(startRealtime);
+  };
+  globalThis.whisperAndroidNetworkLost = () => networkLost();
   globalThis.whisperAndroidSessionRevoked = () => { if (self) { lock(); toast('登录已撤销，请重新登录。'); } };
 }
 document.addEventListener('visibilitychange', () => {
   lifecycle.tick({ animate: false });
-  if (document.hidden) closeImage(); else sync();
+  if (document.hidden) { generation++; stopRealtime(); closeImage(); }
+  else if (!androidPaused) void sync().then(startRealtime);
 });
-window.addEventListener('focus', () => { lifecycle.tick({ animate: false }); webAccountUI?.resume(); });
-window.addEventListener('offline', () => { connection(false); closeImage(); clearMessageView(); signature = ''; });
-window.addEventListener('online', () => { if (savedLoginPending) void restoreSavedLogin(); else { void sync(); webAccountUI?.resume(); } });
+window.addEventListener('focus', () => { lifecycle.tick({ animate: false }); webAccountUI?.resume(); if (realtimeSupported && !document.hidden) void sync().then(startRealtime); });
+function networkLost() { generation++; stopRealtime(); connection(false); closeImage(); if (!suspendedReading) suspendMessageView(); }
+window.addEventListener('offline', networkLost);
+window.addEventListener('online', () => { if (savedLoginPending) void restoreSavedLogin(); else { void sync().then(startRealtime); webAccountUI?.resume(); } });
 window.addEventListener('pagehide', () => { if (android) globalThis.whisperAndroidPause(); else { webPaused = true; lock({ keepSaved: true }); } });
 window.addEventListener('pageshow', event => { if (!android && event.persisted) { webPaused = false; void restoreSavedLogin(); } });
-setInterval(() => sync(false), 500);
+pollTimer = setInterval(() => sync(false), 500);
 try {
   if (!window.isSecureContext || !crypto.subtle) throw new Error('请使用 http://127.0.0.1 本机地址或 HTTPS 临时网址。');
   await ready;
   // Health discovery and protected-login restore run together, so an extra
   // health round-trip never blocks the saved account's empty conversation shell.
   const healthReady = (async () => {
-    const health = android ? { environment: 'cloud', pollIntervalMs: 2000 } : await api('/api/health').catch(() => ({ environment: location.protocol === 'https:' ? 'cloud' : 'local' }));
+    const health = await api('/api/health').catch(() => ({ environment: android || location.protocol === 'https:' ? 'cloud' : 'local' }));
     cloudMode = health.environment === 'cloud';
     if (cloudMode) pollIntervalMs = Math.max(2000, Number(health.pollIntervalMs) || 2000);
+    realtimeSupported = Array.isArray(health.capabilities) && health.capabilities.includes('realtime-sync-v1');
+    if (realtimeSupported) { clearInterval(pollTimer); syncCursor = null; if (self) { await sync(); startRealtime(); } }
     if (self) { $('entry-kind').textContent = cloudMode ? '云端服务' : location.hostname.endsWith('.trycloudflare.com') ? '临时链接入口' : '本机入口'; webAccountUI?.resume(); }
   })();
   $('auth-submit').disabled = false; setMode('login');

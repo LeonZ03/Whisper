@@ -1,6 +1,9 @@
 import { accountService } from '../accounts/service.mjs';
 import { fail, USERNAME, UUID, randomB64, digest, mac, equal, validB64, sequence, requestOrigin, requireWrite, readJSON, SECURITY_HEADERS } from './security.mjs';
 import { serveClientArchive } from './downloads.mjs';
+import { readSync, syncParameters, journalHigh } from './realtime-sync.mjs';
+import { realtimeHub, realtimeOrigin, ticketFromProtocols, notifyRealtime } from './realtime.mjs';
+export { RealtimeHub } from './realtime.mjs';
 const DAY=86400000;
 const publicUser=u=>({id:u.id,username:u.username,publicKey:u.public_key});
 const vaultUser=u=>({...publicUser(u),salt:u.salt,vault:{nonce:u.vault_nonce,ciphertext:u.vault_cipher}});
@@ -14,22 +17,42 @@ async function limit(binding,key,env) {
   if (!binding) { if(env.ENVIRONMENT==='test')return; fail(503,'限流组件尚未配置。'); }
   if (!(await binding.limit({key})).success) fail(429,'操作太频繁，请稍后重试。');
 }
-async function api(request,env,origin) {
+async function api(request,env,origin,ctx) {
   if (!env.DB || !/^[a-f0-9]{64}$/.test(env.AUTH_PEPPER||'')) fail(503,'云端服务尚未配置完成。');
   const url=new URL(request.url), path=url.pathname, method=request.method;
   if (path==='/api/health' && method==='GET') return json({ok:true,app:'Whisper',version:__APP_VERSION__,
     instance:env.INSTANCE_ID,environment:'cloud',commit:__COMMIT__,pollIntervalMs:2000,
-    registration:'approval',passwordPolicy:{min:1,max:12},capabilities:['message-history-v1','cloud-d1-v1','accounts-v2']});
+    registration:'approval',passwordPolicy:{min:1,max:12},capabilities:['message-history-v1','cloud-d1-v1','accounts-v2','realtime-sync-v1']});
   const ip=request.headers.get('CF-Connecting-IP')||'local';
-  await limit(env.API_LIMIT,await digest('api:'+ip),env);
+  // Coarse anonymous abuse guard precedes any credential-shaped database lookup.
+  await limit(env.COARSE_LIMIT,await digest('coarse-ip:'+ip),env);
   const db=env.DB.withSession ? env.DB.withSession('first-primary') : env.DB;
   const stmt=(sql,...args)=>db.prepare(sql).bind(...args);
   const first=(sql,...args)=>stmt(sql,...args).first();
   const all=async(sql,...args)=>(await stmt(sql,...args).all()).results;
+  if(path==='/api/realtime' && method==='GET') {
+    realtimeOrigin(request.headers.get('Origin'),origin);
+    ticketFromProtocols(request.headers.get('Sec-WebSocket-Protocol'));
+    if(request.headers.get('Upgrade')?.toLowerCase()!=='websocket')fail(426,'需要 WebSocket 连接。');
+    await limit(env.CONNECT_IP_LIMIT,await digest('connect-ip:'+ip),env);
+    return realtimeHub(env).fetch(new Request('https://realtime.internal/connect',request));
+  }
+  const token=cookieToken(request), tokenHash=token?await digest(token):null;
+  const rateActor=tokenHash && await first("SELECT u.id FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=? AND s.expires_at>? AND s.credential_version=u.credential_version AND u.status='active'",tokenHash,Date.now());
+  await limit(env.API_LIMIT,rateActor?'api-user:'+rateActor.id:await digest('api-anonymous:'+ip),env);
+  const mutating=!['GET','HEAD'].includes(method) && path!=='/api/realtime/ticket';
+  const before=mutating?await journalHigh(db):null;
+  const finish=response=>{
+    if(mutating && response.ok) {
+      const notification=notifyRealtime(env,db,before,{revalidateAll:/^\/api\/(auth|account|admin)\//.test(path)}).catch(()=>{});
+      if(ctx?.waitUntil)ctx.waitUntil(notification);
+    }
+    return response;
+  };
   let body={}; if(!['GET','HEAD'].includes(method)) {
     requireWrite(request,origin); body=await readJSON(request, /^\/api\/conversations\/[^/]+\/messages$/.test(path)?1950000:8192);
   }
-  if(path.startsWith('/api/auth/')) await limit(env.AUTH_LIMIT,await digest('auth-ip:'+ip),env);
+  if(path.startsWith('/api/auth/') && !(path==='/api/auth/logout' && rateActor)) await limit(env.AUTH_LIMIT,await digest('auth-ip:'+ip),env);
   const cf = request.cf || {};
   const clean = value => typeof value === 'string' ? value.slice(0, 120) : '';
   const location = { country: clean(cf.country), region: clean(cf.region), city: clean(cf.city),
@@ -37,8 +60,16 @@ async function api(request,env,origin) {
     source: env.ENVIRONMENT === 'test' ? 'test' : 'Cloudflare IP geolocation' };
   const accounts = accountService({ db, request, origin, body, pepper: env.AUTH_PEPPER, ip, location });
   const handled = await accounts.handle(path, method);
-  if (handled) return handled;
+  if (handled) return finish(handled);
   const actor = await accounts.authorize({ memberOnly: true }), userId = actor.id;
+  if(path==='/api/realtime/ticket' && method==='POST') {
+    await limit(env.CONNECT_LIMIT,'connect-user:'+userId,env);
+    const ticket=randomB64(32).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,''),expiresAt=Date.now()+60000;
+    const result=await realtimeHub(env).fetch(new Request('https://realtime.internal/ticket',{method:'POST',body:JSON.stringify({ticketHash:await digest(ticket),tokenHash,expiresAt})}));
+    if(!result.ok)fail(result.status,'实时连接票据暂不可用。');
+    return json({ticket,expiresAt});
+  }
+  if(path==='/api/sync' && method==='GET') return json(await readSync(db,{...syncParameters(url),userId,tokenHash}));
   const conversation=async(id)=>{
     const c=await first("SELECT c.* FROM conversations c JOIN users a ON a.id=c.a JOIN users b ON b.id=c.b WHERE c.id=? AND (c.a=? OR c.b=?) AND c.archived_at IS NULL AND a.status='active' AND b.status='active'",id,userId,userId);
     if(!c)fail(404,'会话不存在或无权访问。'); return c;
@@ -60,7 +91,7 @@ async function api(request,env,origin) {
       await stmt('INSERT OR IGNORE INTO conversations(id,a,b,created_at,updated_at) VALUES(?,?,?,?,?)',crypto.randomUUID(),a,b,now,now).run();
       await stmt('UPDATE conversations SET history_from_seq=COALESCE((SELECT MAX(seq) FROM messages WHERE conversation_id=conversations.id),0),archived_at=NULL WHERE a=? AND b=? AND archived_at IS NOT NULL',a,b).run();
       const c=await first('SELECT id FROM conversations WHERE a=? AND b=?',a,b);
-      return json({id:c.id,peer:publicUser(peer),updatedAt:now});
+      return finish(json({id:c.id,peer:publicUser(peer),updatedAt:now}));
     }
   }
   const cm=/^\/api\/conversations\/([^/]+)\/(messages|history|message-state|clear)$/.exec(path);
@@ -83,7 +114,7 @@ async function api(request,env,origin) {
     }
     if(method==='POST' && action==='clear') {
       if(!Number.isSafeInteger(body.throughSeq)||body.throughSeq<0)fail(400,'无效的清理范围。');
-      await stmt('DELETE FROM messages WHERE conversation_id=? AND seq<=?',id,body.throughSeq).run();return json({ok:true});
+      await stmt('DELETE FROM messages WHERE conversation_id=? AND seq<=?',id,body.throughSeq).run();return finish(json({ok:true}));
     }
     if(method==='POST' && action==='messages') {
       await limit(env.SEND_LIMIT,'sender:'+userId,env);
@@ -98,28 +129,30 @@ async function api(request,env,origin) {
         if(String(error).includes('UNIQUE'))fail(409,'消息已存在，不能重复发送。');
         if(String(error).includes('STORAGE_CAP'))fail(507,'云端实验站存储达到上限，请先清理。'); throw error;
       }
-      return json({ok:true,id:mid},201);
+      return finish(json({ok:true,id:mid},201));
     }
   }
   const mm=/^\/api\/messages\/([^/]+)(\/open)?$/.exec(path);
   if(mm) {
     const m=await message(mm[1]);
-    if(!mm[2] && method==='DELETE') {await stmt('DELETE FROM messages WHERE id=?',m.id).run();return json({ok:true});}
+    if(!mm[2] && method==='DELETE') {await stmt('DELETE FROM messages WHERE id=?',m.id).run();return finish(json({ok:true}));}
     if(mm[2] && method==='POST') {
       if(m.type!=='image'||m.sender_id===userId)fail(403,'只有接收方可以打开阅后图片。');
       const payload=await first("DELETE FROM image_payloads WHERE message_id=? AND EXISTS (SELECT 1 FROM messages m JOIN conversations c ON c.id=m.conversation_id JOIN users a ON a.id=c.a JOIN users b ON b.id=c.b WHERE m.id=image_payloads.message_id AND (c.a=? OR c.b=?) AND m.sender_id<>? AND m.expires_at>? AND m.consumed_at IS NULL AND c.archived_at IS NULL AND m.seq>c.history_from_seq AND a.status='active' AND b.status='active') RETURNING nonce,ciphertext",m.id,userId,userId,userId,Date.now());
       if(!payload)fail(410,'图片已经被打开、过期或删除。');
-      return json({...envelope(m),nonce:payload.nonce,ciphertext:payload.ciphertext});
+      return finish(json({...envelope(m),nonce:payload.nonce,ciphertext:payload.ciphertext}));
     }
   }
   fail(404,'接口不存在。');
 }
 export default {
-  async fetch(request,env) {
+  async fetch(request,env,ctx) {
     try {
-      const origin=requestOrigin(request,env),path=new URL(request.url).pathname;
-      if(path.startsWith('/api/'))return await api(request,env,origin);
-      if(path==='/downloads/whisper-cli-windows-x64.zip')return await serveClientArchive(request,env);
+        const origin=requestOrigin(request,env),path=new URL(request.url).pathname;
+        if(path.startsWith('/api/'))return await api(request,env,origin,ctx);
+        if(path==='/downloads/whisper-cli-windows-x64.zip')return await serveClientArchive(request,env,'windows-x64');
+        if(path==='/downloads/whisper-cli-linux-x64.tar.gz')return await serveClientArchive(request,env,'linux-x64');
+        if(path==='/downloads/whisper-cli-linux-arm64.tar.gz')return await serveClientArchive(request,env,'linux-arm64');
       if(!['GET','HEAD'].includes(request.method))fail(405,'请求方法不支持。');
       return await env.ASSETS.fetch(request);
     } catch(error) {
@@ -130,10 +163,17 @@ export default {
   },
   async scheduled(_event,env,ctx) {
     // All reads check expiry themselves; this is physical active-table cleanup.
-    const cleanup=env.DB.batch([
-      env.DB.prepare('DELETE FROM messages WHERE expires_at<=?').bind(Date.now()),
-      env.DB.prepare('DELETE FROM sessions WHERE expires_at<=?').bind(Date.now())
-    ]);
+    const cleanup=(async()=>{
+      const before=await journalHigh(env.DB);
+      const results=await env.DB.batch([
+        env.DB.prepare('DELETE FROM messages WHERE expires_at<=?').bind(Date.now()),
+        env.DB.prepare('DELETE FROM sessions WHERE expires_at<=?').bind(Date.now())
+      ]);
+      // An empty cleanup must not wake the hub or reread every live session.
+      if(results.some(result=>Number(result.meta?.changes)>0)) {
+        await notifyRealtime(env,env.DB,before,{revalidateAll:Number(results[1]?.meta?.changes)>0}).catch(()=>{});
+      }
+    })();
     ctx.waitUntil(cleanup);
   }
 };

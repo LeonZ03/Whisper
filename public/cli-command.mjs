@@ -13,8 +13,29 @@ export function installCommand(value, release) {
     `$b=Join-Path $env:LOCALAPPDATA 'WhisperCLI\\bin'; $env:Path=$b+';'+(($env:Path -split ';' | Where-Object { $_ -and $_ -ne $b }) -join ';') ` +
     `} finally { Remove-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue } }`;
 }
-export function cliInstructions(server, release) {
+export function linuxInstallCommand(value, release) {
+  const u = new URL(value);
+  if (u.username || u.password || u.search || u.hash || u.pathname !== '/' ||
+      !(u.protocol === 'https:' || (u.protocol === 'http:' && ['127.0.0.1', 'localhost', '[::1]'].includes(u.hostname)))) throw new Error('Invalid installation origin');
+  if (!/^[a-f0-9]{64}$/.test(release.installerSha256)) throw new Error('Invalid installation script hash');
+  const q = (s) => "'" + s.replaceAll("'", "'\\''") + "'";
+  const origin = q(u.origin);
+  const hash = release.installerSha256;
+  return `whisper_install() { local u=${origin}; ` +
+    `if ( set -e; p=$(mktemp "${'${TMPDIR:-/tmp}'}/whisper-install.XXXXXX") && ` +
+    `trap 'rm -f -- "$p"' EXIT && trap 'exit 130' INT && trap 'exit 143' TERM && trap 'exit 129' HUP && ` +
+    `printf '%s\\n' 'Preparing Whisper CLI setup: downloading installer...' && ` +
+    `curl -q --fail --silent --show-error --max-time 45 --max-redirs 0 --proto '=https,http' --output "$p" "$u/install.sh" && ` +
+    `printf '%s  %s\\n' '${hash}' "$p" | sha256sum --check --status && ` +
+    `bash "$p" --server "$u" ); then ` +
+    `case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) export PATH="$HOME/.local/bin:$PATH" ;; esac; ` +
+    `else local rc=$?; return "$rc"; fi; }; whisper_install`;
+}
+export function cliInstructions(server, release, linuxRelease) {
   return `CLI 首次安装 / 更新（Windows x64，朋友在自己的 PowerShell 执行）：\n${installCommand(server, release)}\n\n` +
+    (linuxRelease
+      ? `CLI 首次安装 / 更新（Linux x64 / ARM64，朋友在自己的 Bash 执行）：\n${linuxInstallCommand(server, linuxRelease)}\n\n`
+      : 'Linux 首次安装 / 更新：请从安装帮助页复制当前 Linux 命令。\n\n') +
     `CLI 连接（已经安装，无需再次下载）：\nwhisper --server '${new URL(server).origin}'\n\n` +
-    `默认连接：whisper\n卸载：whisper --uninstall\n安装帮助：${new URL(server).origin}/cli.html\n`;
+    `默认连接：whisper\n卸载：whisper --uninstall\n安装帮助：${new URL(server).origin}/cli\n`;
 }

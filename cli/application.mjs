@@ -45,7 +45,7 @@ export class ChatApplication {
     this.client = client; this.ui = ui; this.notice = '输入 /login 登录，或 /register 注册。';
     this.overlay = null; this.overlayKind = null; this.chatChoices = [];
     this.transcript = new CommandTranscript(); this.outputFocus = null;
-    this.busy = false; this.closed = false; this.nextPoll = 0; this.failures = 0; this.syncing = null;
+    this.busy = false; this.closed = false; this.nextPoll = 0; this.failures = 0; this.syncing = null; this.syncAgain = false; this.realtimeState = 'closed';
     this.ui.on('expiry', (now) => {
       const clear = (body, styles) => body?.forEach((_, i) => { if (Number.isFinite(styles?.[i]?.expiresAt) && styles[i].expiresAt <= now) body[i] = ''; });
       clear(this.chatCache?.body, this.chatCache?.styles);
@@ -80,6 +80,7 @@ export class ChatApplication {
         await this.client.health(); healthReady = true; if (this.closed) return;
         if (this.client.restoreSavedLogin && await this.client.restoreSavedLogin()) {
           if (!this.closed) await this.client.sync();
+          this.ensureRealtime();
           this.notify('已恢复本机受保护登录。用 /chats 选择会话。', 'success');
         } else this.notify('服务已连接。输入 /login 或 /register。' + (this.client.loginNotice ? ' ' + safeText(this.client.loginNotice) : ''), this.client.loginNotice ? 'warning' : 'success');
       }
@@ -99,7 +100,7 @@ export class ChatApplication {
       finally { this.historyLoading = false; }
     })();
     this.render();
-    try { await this.syncing; } finally { this.syncing = null; this.render(); }
+    try { await this.syncing; } finally { this.syncing = null; await this.flushQueuedSync(); this.render(); }
   }
   chatBody(c) {
     const cache = this.chatCache;
@@ -123,18 +124,22 @@ export class ChatApplication {
   }
   render() {
     if (this.closed) return; this.transcript.setIdentity(this.commandScope()); const c = this.client; let trust = { blocked: false, verified: false };
+    const renderScope = this.scope();
+    if (this.lastRenderScope !== undefined && this.lastRenderScope !== renderScope) { this.chatCache = null; this.transcript.cache = null; this.clearSendPreview(); }
+    this.lastRenderScope = renderScope;
     if (this.sendPreview && (this.sendPreview.scope !== this.scope() || !c.connected || this.sendPreview.expiresAt <= Date.now() || c.messages.some((m) => m.id === this.sendPreview.id))) this.clearSendPreview();
     try { trust = c.trust(); } catch (error) { trust.blocked = true; this.notify(error.message, 'error'); }
     if (trust.blocked) this.clearSendPreview();
     const peer = c.selected ? ` → @${c.selected.peer.username}` : ' → 未选择联系人';
-    const status = c.connected ? '已连接' : '离线 / 重连中', identity = c.user ? `@${c.user.username}${peer}` : '未登录';
+    const transportOpen = !c.realtime || this.realtimeState === 'open';
+    const status = c.realtime && !transportOpen ? '同步连接中 / 重连中' : c.connected ? '已连接' : '离线 / 重连中', identity = c.user ? `@${c.user.username}${peer}` : '未登录';
     const security = trust.blocked ? '公钥变化，已阻止聊天' : trust.verified ? '已核对安全码' : '请用 /safety 核对安全码';
     let body = this.overlay, bodyKeys = [], bodyStyles = [], bodyKind = 'ui';
-    if (this.overlay || !c.user || !c.selected || !c.connected || trust.blocked) { this.chatCache = null; this.transcript.cache = null; }
+    if (this.overlay || !c.user || !c.selected || !c.connected || !transportOpen || trust.blocked) { this.chatCache = null; this.transcript.cache = null; }
     if (!body) {
       if (!c.user) body = WELCOME;
       else if (!c.selected) body = ['开始聊天', '', '输入 /chat 对方完整用户名。', '输入 /chats 查看已有会话。', '', 'CLI 与网页可互发文字；阅后图片在网页查看。'];
-      else if (!c.connected) body = ['连接中断；已隐藏聊天内容，正在退避重连。', '', '发送结果未知时先 /refresh 核对。'];
+      else if (!c.connected || !transportOpen) body = ['连接中断；已隐藏聊天内容，正在重连。', '', '发送结果未知时先 /refresh 核对。'];
       else if (trust.blocked) body = ['对方身份公钥变化，已停止发送与解密。', '', '不要直接覆盖信任记录，请通过可信渠道确认。'];
       else {
         const chat = this.transcript.compose(this.chatBody(c), this.scope()); body = chat.body; bodyKeys = chat.keys; bodyStyles = chat.styles; bodyKind = 'chat';
@@ -160,16 +165,62 @@ export class ChatApplication {
   }
   async tick() {
     if (this.closed) return; this.render();
+    if (this.client.realtime) return;
     if (this.busy || this.syncing || !this.client.user || Date.now() < this.nextPoll) return;
-    this.syncing = this.synchronize(); try { await this.syncing; } finally { this.syncing = null; } this.render();
+    try { await this.synchronize(); } finally { this.render(); }
+  }
+  ensureRealtime() {
+    if (!this.client.supportsRealtime || !this.client.user) return;
+    if (this.client.realtime) return;
+    this.client.startRealtime({
+      onChange: async () => { await this.synchronize(); this.render(); },
+      onState: (state) => {
+        const previous = this.realtimeState;
+        this.realtimeState = state;
+        if (state === 'open' && !this.closed) this.failures = 0;
+        if (state === 'closed' && previous !== 'closed') {
+          this.chatCache = null; this.transcript.cache = null; this.clearSendPreview();
+        }
+        if (!this.closed) this.render();
+      },
+      onExpired: () => {
+        if (this.closed) return;
+        this.clearSendPreview(); this.overlay = null; this.overlayKind = null;
+        this.notify('登录已过期，请 /login 重新登录。', 'warning'); this.render();
+      },
+    });
   }
   async synchronize() {
+    if (this.syncing) { this.syncAgain = true; return this.syncing; }
+    if (!this.client.user) return;
+    const task = this.performSynchronization(); this.syncing = task;
+    try { return await task; }
+    finally {
+      if (this.syncing === task) this.syncing = null;
+      await this.flushQueuedSync();
+    }
+  }
+  async flushQueuedSync() {
+    if (!this.syncAgain) return;
+    this.syncAgain = false;
+    if (!this.closed && this.client.user) await this.synchronize();
+  }
+  async performSynchronization() {
+    const user = this.client.user, loginEpoch = this.client.loginEpoch, server = this.client.server;
     try {
-      await this.client.sync(); this.failures = 0; this.nextPoll = Date.now() + (this.client.pollIntervalMs || 2000);
+      await this.client.sync(); this.failures = 0;
+      this.nextPoll = Date.now() + (this.client.realtime ? 2_147_483_647 : (this.client.pollIntervalMs || 2000));
+      this.ensureRealtime();
       if (this.notice.startsWith('连接中断')) this.notify('已重新连接。', 'success');
     } catch (error) {
-      this.client.messages = []; this.client.historyComplete = false; this.client.hasOlder = false; this.client.connected = false; this.failures++;
-      this.nextPoll = Date.now() + Math.min(15000, 2000 * 2 ** Math.min(this.failures, 3));
+      if (error.status === 401 && !this.client.user) {
+        this.clearSendPreview(); this.overlay = null; this.overlayKind = null;
+        this.notify('登录已过期，请 /login 重新登录。', 'warning'); this.render(); return;
+      }
+      if (this.client.user !== user || this.client.loginEpoch !== loginEpoch || this.client.server !== server) return;
+      this.chatCache = null; this.transcript.cache = null; this.clearSendPreview();
+      this.client.connected = false; this.failures++;
+      this.nextPoll = Date.now() + (this.client.realtime ? 2_147_483_647 : Math.min(15000, 2000 * 2 ** Math.min(this.failures, 3)));
       this.notify(error.status === 401 ? '登录已过期，请 /login 重新登录。' : '连接中断，正在重试。/refresh 可手动同步。', 'warning');
       if (!this.client.user) { this.overlay = null; this.ui.buffer = ''; this.ui.cursor = 0; }
     }
@@ -192,7 +243,7 @@ export class ChatApplication {
       }
       this.render(); const result = await this.client.authenticate({ username, password, applicationMessage, register }); password = ''; applicationMessage = '';
       if (register) { this.overlay = null; this.notify(result.message || '申请已提交，请等待管理员审批后登录。', 'success'); return; }
-      if (this.closed) return; await this.client.sync(); this.overlay = null; this.overlayKind = null;
+      if (this.closed) return; await this.client.sync(); this.ensureRealtime(); this.overlay = null; this.overlayKind = null;
       this.notify('已登录。用 /chat 用户名 开始聊天；/chats 查看会话。' + (this.client.loginNotice ? ' ' + safeText(this.client.loginNotice) : ''), 'success');
     } finally { password = ''; repeat = ''; applicationMessage = ''; }
   }
@@ -318,14 +369,16 @@ export class ChatApplication {
             restored = Boolean(this.client.restoreSavedLogin && await this.client.restoreSavedLogin());
             if (restored) await this.synchronize();
           }
-          if (this.client.connected) this.notice = (restored ? '已恢复本机受保护登录并重新同步。' : '已重新同步。') + (this.client.loginNotice ? ' ' + safeText(this.client.loginNotice) : '');
+          if (this.client.connected) {
+            this.notice = (restored ? '已恢复本机受保护登录并重新同步。' : '已重新同步。') + (this.client.loginNotice ? ' ' + safeText(this.client.loginNotice) : '');
+          }
           break;
         }
         case '/web': this.showOutput('/web', ['网页入口', '', this.client.server, '', '请自行在浏览器打开，使用相同账号登录。', 'CLI 不会自动打开附件、写入图片文件或领取阅后图片。'], 'web'); break;
         case '/server': {
           if (this.client.user) throw new Error('切换服务前先 /logout。');
           const nextServer = normalizeServer(argument);
-          await this.client.logout(); this.client.server = nextServer; this.client.cookie = ''; this.client.connected = false;
+          this.client.stopRealtime?.(); await this.client.logout(); this.client.server = nextServer; this.client.cookie = ''; this.client.connected = false;
           await this.client.health(); this.notice = '服务已切换；请确认地址可信，再登录。'; break;
         }
         case '/logout':
@@ -335,10 +388,10 @@ export class ChatApplication {
       }
     } catch (error) {
       if (!this.closed) { this.notify(error.message, error.name === 'AbortError' ? 'muted' : 'error'); if (error.name === 'AbortError' || !this.client.user) { this.overlay = null; this.overlayKind = null; } }
-    } finally { line = ''; this.busy = false; this.ui.busy = false; this.nextPoll = Date.now() + (this.client.pollIntervalMs || 2000); this.render(); }
+    } finally { line = ''; this.busy = false; this.ui.busy = false; this.nextPoll = Date.now() + (this.client.realtime ? 2_147_483_647 : (this.client.pollIntervalMs || 2000)); this.render(); }
   }
   async close() {
-    if (this.closed) return; this.closed = true; clearInterval(this.interval); this.clearSendPreview(); this.chatCache = null; this.transcript.clear(); this.ui.stop();
+    if (this.closed) return; this.closed = true; clearInterval(this.interval); this.client.stopRealtime?.(); this.clearSendPreview(); this.chatCache = null; this.transcript.clear(); this.ui.stop();
     // Finish any in-flight restore or login before clearing unlocked memory.
     if (this.startup) await this.startup.catch(() => {});
     if (this.syncing) await this.syncing.catch(() => {});

@@ -1,6 +1,6 @@
-# Whisper CLI：PowerShell 命令安装与聊天
+# Whisper CLI：安装与聊天
 
-当前源码版本为 0.5.6；已安装版本以 `whisper --version` 为准。正式服务与发布包状态见 [部署手册](cloud/DEPLOYMENT.md)，更新命令以当前安装页为准。
+当前源码版本为 0.6.0；已安装版本以 `whisper --version` 为准。正式服务与发布包状态见 [部署手册](cloud/DEPLOYMENT.md)，更新命令以当前安装页为准。
 
 ## 服务提供者
 
@@ -12,9 +12,11 @@
 
 ## 朋友：首次安装
 
-在自己的 Windows x64 PowerShell 中执行服务提供者启动窗口里的完整安装命令。
-也可以从网站首页点击“CLI 安装与使用”，进入 `/cli.html` 后点击“复制安装命令”。这是帮助页，不再要求手动下载和解压。
-命令会下载脚本、核对脚本 SHA-256，在独立 PowerShell 进程中运行，然后下载、校验和安装客户端。
+Windows x64 用户在自己的 PowerShell 中执行服务提供者启动窗口里的完整安装命令。Linux x64 / ARM64 用户从网站首页点击“CLI 安装与使用”，进入 `/cli` 选择 Linux，将安装命令复制到 Bash 执行；Windows 命令也在该页面提供。本机服务提供者需要先运行 `npm run build:cli:linux` 准备 Linux 载荷，正式云端构建会同时准备两个平台。
+安装载荷包含对应平台的 Node.js 运行时；Linux 只需 Bash、curl、tar 和 sha256sum，不需要全局 Node.js、npm、Git 或管理员权限。
+Linux 命令将 `/install.sh` 下载到临时文件，校验页面提供的 SHA-256 后才交给 Bash；安装器自动识别 x64 / ARM64，下载并校验对应客户端。安装到 `~/.local/share/WhisperCLI`，命令入口位于 `~/.local/bin/whisper`。安装完成后当前 Bash 会刷新 PATH；若 `~/.local/bin` 不在 PATH，请将 `export PATH="$HOME/.local/bin:$PATH"` 加入 shell 配置，或重新打开终端。
+Linux 支持 glibc 2.28 及以上的常见发行版。ARM64 发布包的实测状态以版本验收为准。
+Windows 命令会下载脚本、核对脚本 SHA-256，在独立 PowerShell 进程中运行，然后下载、校验和安装客户端。
 执行后先提示下载安装器，再依次显示五个阶段：检查版本、下载、校验、解压校验文件、启用安装；下载按实际字节显示百分比与大小，进度条最多每半秒刷新一次，直连重试时显示 curl 下载进度。
 全部步骤成功后用英文明确显示结果：首次安装为 `Installation successful!`；从旧版本升级为 `Upgrade successful!`，并列出旧版本和新版本；同版本重复安装为 `Reinstallation successful! (Version unchanged)`。版本回退显示 `Version change successful!`，不会误报为升级。失败时不显示成功提示。随后可输入 `whisper` 启动。
 安装到 `%LOCALAPPDATA%\WhisperCLI`，添加当前用户的 `bin` 到用户 PATH，同时刷新当前命令窗口的 PATH。
@@ -23,6 +25,8 @@
 只执行你信任的提供者给出的命令。校验哈希不是独立的发布者签名，不能防止恶意发布者。
 
 ## 朋友：日常连接
+
+0.6.0 使用实时通知和游标增量同步；正常连接不再两秒拉取会话和最近 200 条消息。断线自动退避重连并补拉，旧消息翻阅、草稿、绝对到期时间和公钥核对不变。Windows / Linux 更新都使用安装页对应平台的同一条安装命令；保留已有登录保护和身份，不要删除 data 或重新注册。Linux ARM64 与 x64 发布包分别校验，实际运行平台见部署记录。
 
 ```powershell
 whisper --server https://服务提供者给出的当前地址
@@ -49,6 +53,7 @@ Windows CLI 使用 DPAPI `CurrentUser` 保护 cookie 与身份私钥，按服务
 
 - `/quit`、Ctrl+C、Ctrl+D 或正常关闭 CLI 会清除当前进程中的解锁状态，但保留已保护的登录；下次连接同一服务会尝试恢复。
 - `/logout` 清除该服务的本机保存并请求服务端撤销会话。断网时仍清除本机保存；远端撤销需请求成功。切账号或 `/server` 前先退出账号。
+- Linux CLI 在 Secret Service 密钥环已解锁且 `secret-tool` 可用时，用密钥环保护 AES-GCM 密钥并加密保存会话 cookie 与身份私钥；不保存密码、authKey 或明文身份。无可用/已解锁密钥环时会明确提示本次为临时登录，关闭后需重新登录，不以明文文件兜底。密钥环可用时 `/quit`、Ctrl+C、Ctrl+D 或正常关闭保留密文，`/logout` 清除保存并请求服务端撤销会话。
 - 其他平台或 Windows DPAPI 保护检测不可用时会提示并临时登录，关闭 CLI 后需要重新登录，不以明文文件兜底。已选择受保护登录后写入失败会报错并取消该次登录。
 - 改密、成员恢复、凭据版本变化、禁用或被八个有效会话上限挤出时，保存登录仍会失效；断网恢复失败不等于登录已被撤销，联网后可以重试。
 
@@ -202,7 +207,7 @@ https://learn.chatgpt.com/docs/developer-commands?surface=cli
 
 ## 正式云端入口
 
-安装／更新：https://whisper.leonz03.dpdns.org/cli.html 。
+安装／更新：https://whisper.leonz03.dpdns.org/cli 。
 连接命令：`whisper --server https://whisper.leonz03.dpdns.org`。
 云端账号申请和审批独立于本机；两边不会同步账号、密钥或消息。
 GitHub 推送更新云端服务与可下载客户端，不会静默替换已经安装的 CLI。

@@ -7,6 +7,8 @@ import { promisify } from 'node:util';
 import { mkdirSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { localRealtime } from './realtime.mjs';
+import { readSync, syncParameters, JOURNAL_AUDIENCE_SQL, journalAudienceIds } from '../cloud/realtime-sync.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const { version } = JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8'));
@@ -69,6 +71,11 @@ export async function createWhisperServer(options = {}) {
     try { db.exec(readFileSync(resolve(root, 'cloud/migrations/0004_login_history.sql'), 'utf8')); db.exec('COMMIT'); }
     catch (error) { db.exec('ROLLBACK'); db.close(); throw error; }
   }
+  if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='realtime_journal'").get()) {
+    db.exec('BEGIN IMMEDIATE');
+    try { db.exec(readFileSync(resolve(root, 'cloud/migrations/0005_realtime_journal.sql'), 'utf8')); db.exec('COMMIT'); }
+    catch (error) { db.exec('ROLLBACK'); db.close(); throw error; }
+  }
   const instance = randomUUID();
   const sessions = new Map();
   const limits = new Map();
@@ -77,14 +84,18 @@ export async function createWhisperServer(options = {}) {
   let authBusy = 0;
   let publicOrigin = null;
   let httpServer;
+  let realtime;
   const app = express();
   app.disable('x-powered-by');
   app.set('etag', false);
   function prune() {
     const now = Date.now();
-    db.prepare('DELETE FROM messages WHERE expires_at <= ?').run(now);
+    const before = db.prepare('SELECT COALESCE(MAX(seq),0) AS seq FROM realtime_journal').get().seq;
+    const removedMessages = db.prepare('DELETE FROM messages WHERE expires_at <= ?').run(now).changes;
+    const removedSessions = db.prepare('DELETE FROM sessions WHERE expires_at <= ?').run(now).changes;
     for (const [key, value] of sessions) if (value.expires <= now) sessions.delete(key);
     for (const [key, value] of limits) if (value.until <= now) limits.delete(key);
+    if (realtime && (removedMessages || removedSessions)) notifySince(before, removedSessions > 0);
   }
   prune();
   const janitor = setInterval(prune, 15_000); janitor.unref();
@@ -97,7 +108,7 @@ export async function createWhisperServer(options = {}) {
   function rate(req, scope, max, windowMs = 60_000) {
     const isTunnel = publicOrigin && originFor(req) === publicOrigin;
     const ip = isTunnel ? (req.get('cf-connecting-ip') || req.socket.remoteAddress) : req.socket.remoteAddress;
-    const key = `${scope}:${ip}`;
+    const key = `${scope}:${req.userId && scope !== 'auth' ? 'user:' + req.userId : 'ip:' + ip}`;
     const now = Date.now();
     let entry = limits.get(key);
     if (!entry || entry.until <= now) {
@@ -122,8 +133,22 @@ export async function createWhisperServer(options = {}) {
     }
     next();
   });
-  app.use('/api', (req, _res, next) => { rate(req, 'api', 600); next(); });
-  app.use('/api/auth', (req, _res, next) => { rate(req, 'auth', 30); next(); });
+  app.use('/api', (req, res, next) => {
+    rate(req, 'coarse', 1200);
+    const token = sessionToken(req);
+    if (token) {
+      const actor = db.prepare("SELECT u.id FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=? AND s.expires_at>? AND s.credential_version=u.credential_version AND u.status='active'").get(hash(token), Date.now());
+      if (actor) req.userId = actor.id;
+    }
+    rate(req, 'api', 600);
+    if (!['GET','HEAD'].includes(req.method) && req.path !== '/realtime/ticket') {
+      const before = db.prepare('SELECT COALESCE(MAX(seq),0) AS seq FROM realtime_journal').get().seq;
+      const revalidateAll = /^\/(auth|account|admin)\//.test(req.path);
+      res.once('finish', () => { if (res.statusCode < 400) notifySince(before, revalidateAll); });
+    }
+    next();
+  });
+  app.use('/api/auth', (req, _res, next) => { if (!(req.path === '/logout' && req.userId)) rate(req, 'auth', 30); next(); });
   app.use(express.json({ limit: '2300kb', strict: true }));
   function sessionToken(req) {
     const m = /(?:^|;\s*)whisper_session=([A-Za-z0-9_-]{43})(?:;|$)/.exec(req.get('cookie') || '');
@@ -155,7 +180,21 @@ export async function createWhisperServer(options = {}) {
     try { return (await stretch(secret, salt, 32, { N: 131072, r: 8, p: 1, maxmem: 192 * 1024 * 1024 })).toString('base64'); }
     finally { authBusy--; }
   }
-  app.get('/api/health', (_req, res) => res.json({ ok: true, app: 'Whisper', version, instance, registration: 'approval', passwordPolicy: { min: 1, max: 12 }, capabilities: ['message-history-v1', 'accounts-v2'] }));
+  app.get('/api/health', (_req, res) => res.json({ ok: true, app: 'Whisper', version, instance, registration: 'approval', passwordPolicy: { min: 1, max: 12 }, capabilities: ['message-history-v1', 'accounts-v2', 'realtime-sync-v1'] }));
+  realtime = localRealtime({ db, originFor, rate });
+  function notifySince(before, revalidateAll = false) {
+    try {
+      const audience = journalAudienceIds(db.prepare(JOURNAL_AUDIENCE_SQL).all(before));
+      realtime.notify(audience, { revalidateAll });
+    } catch { /* Committed writes must remain successful if notification fails. */ }
+  }
+  app.post('/api/realtime/ticket', auth, (req, res) => {
+    rate(req, 'connect', 30); res.json(realtime.issue(hash(sessionToken(req))));
+  });
+  app.get('/api/sync', auth, async (req, res, next) => {
+    try { res.json(await readSync(localStore(db), { ...syncParameters(new URL(req.originalUrl, originFor(req))), userId: req.userId, tokenHash: hash(sessionToken(req)), local: true })); }
+    catch (error) { next(error); }
+  });
   function accountsFor(req) {
     const origin = originFor(req);
     const request = new Request(origin + req.originalUrl, { headers: Object.fromEntries(Object.entries(req.headers).map(([k,v]) => [k, Array.isArray(v) ? v.join(', ') : String(v || '')])) });
@@ -273,6 +312,7 @@ export async function createWhisperServer(options = {}) {
     httpServer = app.listen(port, '127.0.0.1', resolveListen); httpServer.once('error', reject);
   }).catch((error) => { clearInterval(janitor); db.close(); throw error; });
   httpServer.requestTimeout = 30_000; httpServer.headersTimeout = 15_000;
+  realtime.attach(httpServer);
   const localUrl = `http://127.0.0.1:${httpServer.address().port}`;
   allowed.add(localUrl); allowed.add(`http://localhost:${httpServer.address().port}`);
   return {
@@ -284,7 +324,7 @@ export async function createWhisperServer(options = {}) {
       publicOrigin = parsed.origin; allowed.add(publicOrigin);
     },
     async close() {
-      clearInterval(janitor); sessions.clear(); fakeSaltKey.fill(0);
+      clearInterval(janitor); realtime.close(); sessions.clear(); fakeSaltKey.fill(0);
       httpServer.closeAllConnections();
       await new Promise((r) => httpServer.close(r)); db.close();
     }

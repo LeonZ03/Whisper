@@ -1,0 +1,10 @@
+#!/bin/sh
+set -eu
+if [ -z "${WHISPER_HOME:-}" ]; then
+SELF=$(readlink -f -- "$0") || { echo 'Cannot resolve Whisper CLI installation.' >&2; exit 1; }
+  WHISPER_HOME=$(CDPATH='' cd -- "$(dirname -- "$SELF")/../.." && pwd -P)
+fi
+export WHISPER_CLI_HOME="$WHISPER_HOME"
+if [ -z "${WHISPER_CLI_DATA_DIR:-}" ]; then export WHISPER_CLI_DATA_DIR="$WHISPER_HOME/data"; fi
+if [ "${1:-}" = --uninstall ]; then shift; exec "$WHISPER_HOME/current/uninstall-linux.sh" "$@"; fi
+exec "$WHISPER_HOME/current/runtime/node" --no-warnings "$WHISPER_HOME/current/cli/remote-entry.mjs" "$@"

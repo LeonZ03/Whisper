@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, readFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createWhisperServer } from '../server/app.mjs';
+import WebSocket from 'ws';
 let app, dir;
 const version = JSON.parse(readFileSync('package.json', 'utf8')).version;
 test.beforeAll(async () => {
@@ -16,6 +17,21 @@ test.afterAll(async () => { await app?.close(); if (dir) rmSync(dir, { recursive
 async function client(browser) {
   const context = await browser.newContext({ viewport: { width: 393, height: 800 } });
   let cookie = '', requests = [], clears = 0, savedLogin = null, offline = false, restoreGate = null;
+  const realtimeSockets = new Set(), realtimeFailures = [];
+  // Keep the packaged client's fixed WSS endpoint and exact CSP. Playwright
+  // routes that endpoint to an isolated real WebSocket handshake; no production
+  // connection or account is used. This is browser bridge coverage, not a device test.
+  await context.routeWebSocket('wss://whisper.leonz03.dpdns.org/api/realtime', route => {
+    const endpoint = new URL('/api/realtime', app.localUrl); endpoint.protocol = 'ws:';
+    const socket = new WebSocket(endpoint, route.protocols(), { origin: 'https://appassets.androidplatform.net' });
+    realtimeSockets.add(socket); const pending = [];
+    socket.on('open', () => { for (const message of pending.splice(0)) socket.send(message); });
+    socket.on('message', (data, binary) => route.send(binary ? data : data.toString()));
+    socket.on('error', () => { realtimeFailures.push('隔离实时握手失败'); void route.close({ code: 1011 }); });
+    socket.on('close', (code) => { realtimeSockets.delete(socket); void route.close({ code: code === 1005 || code === 1006 ? 1000 : code }); });
+    route.onMessage(message => { if (socket.readyState === WebSocket.OPEN) socket.send(message); else if (socket.readyState === WebSocket.CONNECTING && pending.length < 4) pending.push(message); });
+    route.onClose(() => { if (socket.readyState === WebSocket.CONNECTING) socket.terminate(); else socket.close(); });
+  });
   await context.exposeBinding('androidRequest', async ({ page }, id, path, method, body) => {
     requests.push({ path, method, body });
     if (path === '/api/account/me' && restoreGate) await restoreGate;
@@ -49,13 +65,13 @@ async function client(browser) {
     if (!['index.html', 'style.css', 'app.js', 'brand-mark.svg'].includes(name)) return route.abort();
     const mime = { 'index.html': 'text/html', 'style.css': 'text/css', 'app.js': 'text/javascript', 'brand-mark.svg': 'image/svg+xml' }[name];
     await route.fulfill({ contentType: mime, body: readFileSync(join('.runtime/android-build/assets', name)), headers: {
-      'Content-Security-Policy': "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' blob:; connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"
+      'Content-Security-Policy': "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' blob:; connect-src wss://whisper.leonz03.dpdns.org/api/realtime; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"
     } });
   });
   const page = await context.newPage(); page.on('dialog', dialog => dialog.accept());
   const errors = []; page.on('pageerror', error => errors.push(error.message));
   await page.goto('https://appassets.androidplatform.net/index.html'); await expect(page.locator('#auth-submit')).toBeEnabled();
-  return { context, page, errors, requests, getCookie: () => cookie, clears: () => clears, hasSavedLogin: () => Boolean(savedLogin),
+  return { context, page, errors, requests, realtimeFailures, realtimeSockets, getCookie: () => cookie, clears: () => clears, hasSavedLogin: () => Boolean(savedLogin),
     restart: async () => { cookie = ''; await page.reload({ waitUntil: 'commit' }); }, setOffline: value => { offline = value; },
     holdRestore: () => { let release; restoreGate = new Promise(resolve => { release = resolve; }); return () => { restoreGate = null; release(); }; } };
 }
@@ -116,6 +132,13 @@ test('Android packaged UI: durable login, devices, encrypted chat, 3-second imag
     await b.page.getByRole('button', { name: '与 android_alice 的会话' }).click();
     const text = '安卓端消息 <img src=x onerror=alert(1)>'; await a.page.locator('#message-input').fill(text); await a.page.locator('#send').click();
     await expect(b.page.locator('.bubble').filter({ hasText: text })).toBeVisible({ timeout: 15000 });
+    expect(a.requests.some(request => request.path.startsWith('/api/sync'))).toBe(true);
+    expect(b.requests.some(request => request.path.startsWith('/api/sync'))).toBe(true);
+    await expect.poll(() => b.realtimeSockets.size).toBe(1);
+    const syncedRequests = b.requests.filter(request => request.path.startsWith('/api/sync')).length;
+    await b.page.waitForTimeout(2300);
+    expect(b.requests.filter(request => request.path.startsWith('/api/sync')).length).toBe(syncedRequests);
+    expect(a.requests.some(request => /\/api\/conversations\/[^/]+\/messages$/.test(request.path) && request.method === 'GET')).toBe(false);
     expect(await b.page.locator('.bubble img').count()).toBe(0);
     expect(a.requests.map(r => r.body).join('')).not.toContain(text); expect(a.requests.map(r => r.body).join('')).not.toContain(password);
     expect(readFileSync(join(dir, 'whisper.sqlite')).includes(Buffer.from(text))).toBe(false);

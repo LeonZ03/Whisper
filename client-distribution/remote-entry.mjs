@@ -16,7 +16,7 @@ if (needsServer && !process.env.WHISPER_SERVER && process.env.WHISPER_CLI_HOME) 
 // This entry runs on the visitor's machine, never on the chat host.
 if (!process.exitCode && needsServer && !process.env.WHISPER_SERVER) {
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
-    console.error('请在真实交互终端（PowerShell）中运行客户端。');
+    console.error('请在真实交互终端（PowerShell 或 Linux 终端）中运行客户端。');
     process.exitCode = 1;
   } else {
     const prompt = createInterface({ input: process.stdin, output: process.stdout, historySize: 0 });

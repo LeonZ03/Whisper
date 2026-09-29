@@ -8,6 +8,7 @@ test-results/
 *.b64
 public/downloads/
 public/install.ps1
+public/install.sh
 
 # Local configuration and sensitive/runtime data
 .env

@@ -7,6 +7,7 @@ import { ProtectedLoginStore } from '../cli/login-store.mjs';
 import { WhisperClient } from '../cli/client.mjs';
 import { createWhisperServer } from '../server/app.mjs';
 import { prepareEnrollment } from '../src/account-client.mjs';
+import { LinuxKeyring, runSecretTool } from '../cli/linux-keyring.mjs';
 
 test('Windows DPAPI seals identity, binds origin, rejects tampering and clears queued saves', { skip: process.platform !== 'win32', timeout: 60000 }, async () => {
   const dir = await mkdtemp(join(tmpdir(), 'whisper-dpapi-'));
@@ -27,10 +28,10 @@ test('Windows DPAPI seals identity, binds origin, rejects tampering and clears q
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
-test('CLI protected restart retains one session, explicit logout and revocation clear it', { skip: process.platform !== 'win32', timeout: 120000 }, async () => {
+test('CLI protected restart retains one session, explicit logout and revocation clear it', { skip: process.platform !== 'win32' && !(process.platform === 'linux' && process.env.WHISPER_TEST_SECRET_TOOL), timeout: 120000 }, async () => {
   const dir = await mkdtemp(join(tmpdir(), 'whisper-persistent-cli-'));
   const app = await createWhisperServer({ port: 0, dataDir: join(dir, 'server') });
-  const store = new ProtectedLoginStore(join(dir, 'client'));
+  const store = new ProtectedLoginStore(join(dir, 'client'), { keyring: process.platform === 'linux' ? new LinuxKeyring(join(dir, 'client'), (args, input) => runSecretTool(args, input, process.env.WHISPER_TEST_SECRET_TOOL)) : undefined });
   const fresh = () => new WhisperClient({ server: app.localUrl, loginStore: store });
   let client = fresh();
   try {

@@ -8,7 +8,7 @@ const root = fileURLToPath(new URL('../', import.meta.url));
 const hash = (file) => createHash('sha256').update(readFileSync(file)).digest('hex');
 if (process.platform !== 'win32' || process.arch !== 'x64') throw new Error('Build on Windows x64 with Node.js 24+.');
 if (Number(process.versions.node.split('.')[0]) < 24) throw new Error('Node.js 24+ required.');
-const inputs = ['cli', 'src/crypto.mjs', 'src/account-client.mjs', 'client-distribution', 'package-lock.json', 'scripts/build-cli.mjs'];
+const inputs = ['cli', 'src/crypto.mjs', 'src/account-client.mjs', 'src/realtime-client.mjs', 'client-distribution', 'package-lock.json', 'scripts/build-cli.mjs'];
 const fingerprint = createHash('sha256').update(hash(process.execPath));
 function digestInput(path, label) {
   if (lstatSync(path).isSymbolicLink()) throw new Error('Linked build input');
@@ -51,9 +51,10 @@ function copyDependency(name) {
 }
 try {
   // Deliberate allowlist. Never copy the project, data/, server/, tests/ or devDependencies.
-  for (const name of ['application.mjs', 'client.mjs', 'index.mjs', 'terminal.mjs', 'theme.mjs', 'transcript.mjs', 'account-ui.mjs', 'login-store.mjs']) safeCopy(join(root, 'cli', name), join(destination, 'cli', name));
+  for (const name of ['application.mjs', 'client.mjs', 'index.mjs', 'terminal.mjs', 'theme.mjs', 'transcript.mjs', 'account-ui.mjs', 'login-store.mjs', 'linux-keyring.mjs']) safeCopy(join(root, 'cli', name), join(destination, 'cli', name));
   safeCopy(join(root, 'src/crypto.mjs'), join(destination, 'src/crypto.mjs'));
   safeCopy(join(root, 'src/account-client.mjs'), join(destination, 'src/account-client.mjs'));
+  safeCopy(join(root, 'src/realtime-client.mjs'), join(destination, 'src/realtime-client.mjs'));
   for (const name of ['whisper.cmd', 'README.txt', 'uninstall.ps1']) safeCopy(join(root, 'client-distribution', name), join(destination, name));
   safeCopy(join(root, 'client-distribution/remote-entry.mjs'), join(destination, 'cli/remote-entry.mjs'));
   copyDependency('libsodium-wrappers'); copyDependency('string-width');

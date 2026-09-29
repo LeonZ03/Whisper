@@ -37,7 +37,7 @@ export class TerminalUI extends EventEmitter {
     this.onResize = () => { this.lastLines = []; this.render(); }; this.onEnd = () => this.emit('quit');
   }
   start() {
-    if (!this.input.isTTY || !this.output.isTTY || !this.input.setRawMode) throw new Error('CLI 需要真实交互终端。请在 PowerShell / Windows Terminal 中直接运行，勿使用管道、重定向或 PowerShell ISE。');
+    if (!this.input.isTTY || !this.output.isTTY || !this.input.setRawMode) throw new Error('CLI 需要真实交互终端。请在 PowerShell、Windows Terminal 或 Linux 终端中直接运行，勿使用管道、重定向或 PowerShell ISE。');
     this.active = true; emitKeypressEvents(this.keyInput); this.wasRaw = this.input.isRaw;
     this.input.setRawMode(true); this.keyInput.on('keypress', this.onKey);
     this.input.on('data', this.onData); this.input.on('end', this.onEnd);

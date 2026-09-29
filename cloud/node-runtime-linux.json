@@ -1,0 +1,19 @@
+{
+  "version": "v24.16.0",
+  "platform": "linux-glibc-x64-arm64",
+  "glibcMinimum": "2.28",
+  "kernelMinimum": "4.18",
+  "runtimes": {
+    "x64": {
+      "filename": "node-v24.16.0-linux-x64.tar.gz",
+      "url": "https://nodejs.org/dist/v24.16.0/node-v24.16.0-linux-x64.tar.gz",
+      "sha256": "2faf6a387e9b62b888e21c54f01249fb27537ffecf1842f29f4c919d0a59a0ff"
+    },
+    "arm64": {
+      "filename": "node-v24.16.0-linux-arm64.tar.gz",
+      "url": "https://nodejs.org/dist/v24.16.0/node-v24.16.0-linux-arm64.tar.gz",
+      "sha256": "589f5b6dd4fcfee4dfda73013903c966abaa8abd93dbc9d436544e472b4f0e74"
+    }
+  },
+  "source": "https://nodejs.org/dist/v24.16.0/SHASUMS256.txt"
+}
