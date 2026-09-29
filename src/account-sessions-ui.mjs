@@ -38,8 +38,8 @@ export function createAccountSessionsUI({ root, fetchImpl = fetch } = {}) {
       heading.append(state);
       const details = document.createElement('p');
       details.className = 'session-details';
-      const ip = typeof session?.ip === 'string' && session.ip.trim() ? session.ip : '未知';
-      details.textContent = `${method} · ${readableDate(session?.createdAt)} · IP ${ip}`;
+      const ip = typeof session?.ip === 'string' && session.ip.trim() && !['unknown', 'local'].includes(session.ip) ? session.ip : '待该设备再次连接';
+      details.textContent = `${method} · 登录于 ${readableDate(session?.createdAt)} · 最近连接 IP ${ip}`;
       item.append(heading, details);
       list.append(item);
     }

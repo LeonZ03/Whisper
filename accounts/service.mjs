@@ -14,6 +14,7 @@ export function accountService({ db, request, origin, body = {}, pepper, hashCre
   const stmt = (sql, ...args) => db.prepare(sql).bind(...args);
   const first = (sql, ...args) => stmt(sql, ...args).first();
   const all = async (sql, ...args) => (await stmt(sql, ...args).all()).results;
+  const sessionIP = String(ip).replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 80);
   const verifier = hashCredential || ((key, salt, username) => mac(pepper, 'auth-v1', username, salt, key));
   const attemptScope = async username => digest('account-login:' + username);
   const audit = (action, user = {}) => stmt('INSERT INTO admin_audit(timestamp,action,target_id,target_name) VALUES(?,?,?,?)', Date.now(), action, user.id || null, user.username || null);
@@ -38,10 +39,17 @@ export function accountService({ db, request, origin, body = {}, pepper, hashCre
   }
   async function authorize({ allowForced = false, memberOnly = false } = {}) {
     const token = tokenOf(request);
-    const user = token && await first('SELECT u.* FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=? AND s.expires_at>? AND s.credential_version=u.credential_version AND u.status=\'active\'', await digest(token), Date.now());
+    const tokenHash = token && await digest(token);
+    const user = tokenHash && await first('SELECT u.*,d.public_id AS session_device_id,d.ip AS session_ip FROM sessions s JOIN users u ON u.id=s.user_id LEFT JOIN session_devices d ON d.token_hash=s.token_hash WHERE s.token_hash=? AND s.expires_at>? AND s.credential_version=u.credential_version AND u.status=\'active\'', tokenHash, Date.now());
     if (!user) fail(401, '登录已失效，请重新登录。');
     if (user.must_change && !allowForced) fail(403, '请先修改初始密码，再使用其他功能。');
     if (memberOnly && user.role !== 'member') fail(403, 'root 仅用于管理，不参与成员聊天。');
+    if (sessionIP && !['unknown', 'local'].includes(sessionIP) && (!user.session_device_id || user.session_ip !== sessionIP)) {
+      const device = sessionDevice(request);
+      // Only the authenticated device can supply its observed IP. Do not renew
+      // expiry or invent the historical login IP for pre-upgrade sessions.
+      await stmt("INSERT INTO session_devices(token_hash,public_id,method,device,ip) SELECT s.token_hash,?,?,?,? FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=? AND s.expires_at>? AND s.credential_version=u.credential_version AND u.status='active' ON CONFLICT(token_hash) DO UPDATE SET ip=excluded.ip WHERE session_devices.ip<>excluded.ip", crypto.randomUUID(), device.method, device.device, sessionIP, tokenHash, Date.now()).run();
+    }
     return user;
   }
   async function issue(user) {
@@ -51,7 +59,7 @@ export function accountService({ db, request, origin, body = {}, pepper, hashCre
     const expiresAt = device.method === 'app' ? APP_SESSION_EXPIRES_AT : now + 43200000;
     const insert = stmt("INSERT INTO sessions(token_hash,user_id,created_at,expires_at,credential_version) SELECT ?,id,?,?,credential_version FROM users WHERE id=? AND credential_version=? AND auth_hash=? AND status='active' AND (auth_scheme<>'root-bootstrap-hmac-v1' OR root_activation_consumed=0) RETURNING user_id", tokenHash, now, expiresAt, user.id, user.credential_version, user.auth_hash);
     const commands = [insert,
-      stmt('INSERT INTO session_devices(token_hash,public_id,method,device,ip) SELECT token_hash,?,?,?,? FROM sessions WHERE token_hash=?', crypto.randomUUID(), device.method, device.device, String(ip).replace(/[\u0000-\u001f\u007f]/g, '').slice(0, 80), tokenHash)];
+      stmt('INSERT INTO session_devices(token_hash,public_id,method,device,ip) SELECT token_hash,?,?,?,? FROM sessions WHERE token_hash=?', crypto.randomUUID(), device.method, device.device, sessionIP, tokenHash)];
     if (user.role === 'root') {
       commands.push(
         stmt('INSERT INTO root_login_log(timestamp,result,ip,location) SELECT ?,?,?,? WHERE EXISTS(SELECT 1 FROM sessions WHERE token_hash=?)', Date.now(), user.must_change ? 'success_initial' : 'success', String(ip).slice(0, 80), JSON.stringify(location), tokenHash),

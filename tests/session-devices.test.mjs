@@ -25,11 +25,15 @@ async function exercise(f, cloud) {
   const db = f.db;
   const run = (sql, ...args) => db.prepare(sql).bind(...args).run();
   const first = (sql, ...args) => db.prepare(sql).bind(...args).first();
+  const clientIPs = new Map();
   const request = async (path, method = 'GET', body, cookie, extra = {}) => {
+    const sourceIP = extra['CF-Connecting-IP'] || clientIPs.get(cookie) || '127.0.0.1';
+    if (cookie) clientIPs.set(cookie, sourceIP);
     const response = await fetch(f.url + path, { method, headers: {
       ...(method === 'GET' ? {} : { Origin: f.url, 'Content-Type': 'application/json', 'X-Whisper-Request': '1' }),
-      ...(cookie ? { Cookie: cookie } : {}), ...extra
+      ...(cookie ? { Cookie: cookie } : {}), ...(cloud ? { 'CF-Connecting-IP': sourceIP } : {}), ...extra
     }, body: method === 'GET' ? undefined : JSON.stringify(body ?? {}) });
+    if (response.headers.get('set-cookie')) clientIPs.set(response.headers.get('set-cookie').split(';')[0], sourceIP);
     return { status: response.status, data: await response.json(), cookie: response.headers.get('set-cookie')?.split(';')[0], setCookie: response.headers.get('set-cookie') };
   };
   const alice = envelope('devices_alice'), bob = envelope('devices_bob');
@@ -69,11 +73,22 @@ async function exercise(f, cloud) {
   assert.equal((await request('/api/account/me', 'GET', undefined, web.cookie)).status, 401);
   assert.equal((await request('/api/account/me', 'GET', undefined, app.cookie)).status, 200);
   assert.equal((await request('/api/account/sessions', 'GET', undefined, app.cookie)).data.sessions.length, 2);
-  // Explicit old-style INSERT has no side-table row, and stays identifiable as unknown.
+  // A viewer cannot invent metadata for another device's old login.
   const legacyToken = randomBytes(32).toString('base64url'), legacyCookie = `whisper_session=${legacyToken}`;
   await run('INSERT INTO sessions(token_hash,user_id,created_at,expires_at,credential_version) VALUES(?,?,?,?,?)', hash(legacyToken), appRow.user_id, Date.now(), Date.now() + 43200000, appRow.credential_version);
-  const legacy = (await request('/api/account/sessions', 'GET', undefined, legacyCookie)).data.sessions.find(row => row.current);
-  assert.equal(legacy.method, 'unknown'); assert.equal(legacy.ip, 'unknown'); assert.equal(legacy.device, '未知设备'); assert.notEqual(legacy.id, hash(legacyToken));
+  const legacyBefore = (await request('/api/account/sessions', 'GET', undefined, app.cookie)).data.sessions.find(row => row.method === 'unknown');
+  assert.equal(legacyBefore.ip, 'unknown'); assert.equal(legacyBefore.device, '未知设备'); assert.notEqual(legacyBefore.id, hash(legacyToken));
+  const legacyRow = await first('SELECT * FROM sessions WHERE token_hash=?', hash(legacyToken));
+  // The old device itself reconnects; populate only that session without extending it.
+  assert.equal((await request('/api/account/me', 'GET', undefined, legacyCookie, { 'CF-Connecting-IP': '203.0.113.20' })).status, 200);
+  const legacy = (await request('/api/account/sessions', 'GET', undefined, app.cookie)).data.sessions.find(row => row.createdAt === legacyRow.created_at && row.expiresAt === legacyRow.expires_at);
+  assert.equal(legacy.method, 'web'); assert.equal(legacy.ip, cloud ? '203.0.113.20' : '127.0.0.1');
+  assert.equal((await first('SELECT expires_at FROM sessions WHERE token_hash=?', hash(legacyToken))).expires_at, legacyRow.expires_at);
+  assert.equal((await request('/api/account/me', 'GET', undefined, app.cookie, { 'CF-Connecting-IP': '203.0.113.9' })).status, 200);
+  const updated = (await request('/api/account/sessions', 'GET', undefined, app.cookie)).data.sessions.find(row => row.current);
+  assert.equal(updated.id, current.id); assert.equal(updated.method, 'app'); assert.equal(updated.device, current.device);
+  assert.equal(updated.ip, cloud ? '203.0.113.9' : '127.0.0.1');
+  assert.equal((await first('SELECT ip FROM session_devices WHERE token_hash=?', hash(legacyToken))).ip, legacy.ip);
   assert.equal((await request('/api/auth/logout', 'POST', {}, cli.cookie)).status, 200);
   assert.equal(await first('SELECT * FROM session_devices WHERE token_hash=?', cookieHash(cli.cookie)), null);
   await run('UPDATE users SET credential_version=credential_version+1 WHERE id=?', appRow.user_id);

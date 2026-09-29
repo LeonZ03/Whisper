@@ -4,7 +4,8 @@
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="robots" content="noindex,nofollow"><meta name="color-scheme" content="light"><title>私人会话</title>
 <link rel="icon" href="/brand-mark.svg" type="image/svg+xml"><link rel="stylesheet" href="/style.css"><script type="module" src="/app.js"></script>
 </head><body>
-<section id="auth-screen" class="auth-screen">
+<section id="startup-screen" class="startup-screen" role="status"><img src="/brand-mark.svg" alt=""><span class="sr-only">正在打开</span></section>
+<section id="auth-screen" class="auth-screen" hidden>
 <main class="auth-main"><img class="auth-mark" src="/brand-mark.svg" alt="W"><div class="auth-version"><span class="app-version" data-app-version></span></div><h1 id="auth-title">回到你的会话</h1><p id="auth-subtitle" class="subtle">使用用户名和密码登录，并在本机解锁密钥。</p>
 <div class="tabs" role="tablist" aria-label="账号操作"><button id="login-tab" role="tab" aria-selected="true" class="active" type="button">登录</button><button id="register-tab" role="tab" aria-selected="false" type="button">申请账号</button></div>
 <form id="auth-form" class="form-stack"><label for="username">用户名</label><input id="username" name="username" autocomplete="username" placeholder="3–24 位字母、数字或下划线" minlength="3" maxlength="24" pattern="[a-z0-9_]{3,24}" required><label for="password">密码</label><input id="password" name="password" type="password" autocomplete="current-password" placeholder="请输入密码" required>

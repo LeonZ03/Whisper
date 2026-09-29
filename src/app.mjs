@@ -153,30 +153,44 @@ async function enterUser(user, secretKey, activationCode = '', save = false) {
   await accountControls.enter(self);
   if (self?.role === 'member') await sync();
 }
-function hideRestoreNotice() { $('login-restore-status')?.remove(); $('retry-login')?.remove(); }
-function restoreNotice(text) {
+function hideRestoreNotice() {
+  $('login-restore-status')?.remove(); $('retry-login')?.remove(); $('restore-logout')?.remove();
+  if (android) {
+    $('startup-screen').hidden = true; $('chat-screen').removeAttribute('aria-busy');
+    $('new-chat-form').inert = false; $('mobile-nav').inert = false;
+  }
+}
+function restoreNotice(text, retryable = false) {
   hideRestoreNotice();
+  $('auth-screen').hidden = true; $('chat-screen').hidden = false; mobileView('conversations');
+  $('chat-screen').setAttribute('aria-busy', String(!retryable));
+  $('new-chat-form').inert = true; $('mobile-nav').inert = true;
   const status = document.createElement('p'); status.id = 'login-restore-status'; status.className = 'field-help'; status.setAttribute('role', 'status'); status.textContent = text;
-  const retry = document.createElement('button'); retry.id = 'retry-login'; retry.type = 'button'; retry.className = 'quiet'; retry.textContent = '重试恢复登录'; retry.onclick = () => void restoreAndroidLogin();
-  $('auth-form').before(status, retry);
+  $('conversations').before(status);
+  if (retryable) {
+    const retry = document.createElement('button'); retry.id = 'retry-login'; retry.type = 'button'; retry.className = 'quiet'; retry.textContent = '重试连接'; retry.onclick = () => void restoreAndroidLogin();
+    const logout = document.createElement('button'); logout.id = 'restore-logout'; logout.type = 'button'; logout.className = 'quiet'; logout.textContent = '退出登录'; logout.onclick = () => $('logout').click();
+    $('conversations').before(retry, logout);
+  }
 }
 async function restoreAndroidLogin() {
   if (!android || self || restoringLogin || androidPaused) return;
   let key, saved; const epoch = generation; restoringLogin = true;
   try {
     saved = await globalThis.whisperAndroidRestoreLogin(); if (epoch !== generation) return;
-    if (!saved) { savedLoginPending = false; return; }
+    if (!saved) { savedLoginPending = false; hideRestoreNotice(); $('chat-screen').hidden = true; $('auth-screen').hidden = false; return; }
     savedLoginPending = true; $('auth-submit').disabled = true; $('auth-submit').textContent = '正在恢复登录…';
     if (saved.v !== 1 || typeof saved.id !== 'string' || typeof saved.publicKey !== 'string' || typeof saved.secretKey !== 'string') throw Object.assign(Error('保存的身份无效'), { status: 401 });
+    key = unb64(saved.secretKey); if (key.length !== 32) throw Object.assign(Error('保存的身份无效'), { status: 401 });
+    restoreNotice('正在同步会话…');
     const me = await api('/api/account/me');
     if (epoch !== generation || androidPaused) return;
     if (me.id !== saved.id || me.publicKey !== saved.publicKey || me.mustChangePassword) throw Object.assign(Error('账号状态已变化'), { status: 401 });
-    key = unb64(saved.secretKey); if (key.length !== 32) throw Object.assign(Error('保存的身份无效'), { status: 401 });
     savedLoginPending = false; const sessionKey = key; key = null; await enterUser(me, sessionKey);
   } catch (error) {
     if (epoch !== generation) return;
     if (error.status === 401 || error.status === 403) { lock(); toast('登录已撤销或账号已变化，请重新登录。'); }
-    else { savedLoginPending = true; restoreNotice('暂时无法连接，已保留登录状态。联网后可自动恢复，或点击重试。'); }
+    else { savedLoginPending = true; restoreNotice('暂时无法连接，已保留登录状态。联网后会自动同步。', true); }
   } finally {
     wipe(key); saved = null; restoringLogin = false;
     $('auth-submit').disabled = false; $('auth-submit').textContent = mode === 'register' ? '提交申请' : '解锁并进入';
@@ -472,11 +486,10 @@ setInterval(() => sync(false), 500);
 try {
   if (!window.isSecureContext || !crypto.subtle) throw new Error('请使用 http://127.0.0.1 本机地址或 HTTPS 临时网址。');
   await ready;
-  let health;
-  try { health = await api('/api/health'); }
-  catch (error) { if (!android) throw error; health = { environment: 'cloud', pollIntervalMs: 2000 }; }
+  // The APK has a fixed cloud endpoint; a health round-trip must not delay startup.
+  const health = android ? { environment: 'cloud', pollIntervalMs: 2000 } : await api('/api/health');
   cloudMode = health.environment === 'cloud';
   if (cloudMode) pollIntervalMs = Math.max(2000, Number(health.pollIntervalMs) || 2000);
   $('auth-submit').disabled = false; setMode('login');
   if (android) await restoreAndroidLogin();
-} catch (error) { $('auth-error').textContent = '加密组件无法启动：' + error.message; $('auth-submit').textContent = '无法启动'; }
+} catch (error) { if (android) { hideRestoreNotice(); $('auth-screen').hidden = false; } $('auth-error').textContent = '加密组件无法启动：' + error.message; $('auth-submit').textContent = '无法启动'; }

@@ -15,9 +15,10 @@ test.afterAll(async () => { await app?.close(); if (dir) rmSync(dir, { recursive
 // isolated real API. The OS window flag is checked separately in the APK build.
 async function client(browser) {
   const context = await browser.newContext({ viewport: { width: 393, height: 800 } });
-  let cookie = '', requests = [], clears = 0, savedLogin = null, offline = false;
+  let cookie = '', requests = [], clears = 0, savedLogin = null, offline = false, restoreGate = null;
   await context.exposeBinding('androidRequest', async ({ page }, id, path, method, body) => {
     requests.push({ path, method, body });
+    if (path === '/api/account/me' && restoreGate) await restoreGate;
     if (offline) { await page.evaluate(id => globalThis.whisperAndroidResponse(id, 0, ''), id); return; }
     const response = await fetch(app.localUrl + path, { method, headers: { Origin: app.localUrl, Cookie: cookie,
       'X-Whisper-Client': 'app', 'X-Whisper-Device': 'OPPO test / Android 15',
@@ -31,6 +32,11 @@ async function client(browser) {
   await context.exposeBinding('androidSave', (_, identity) => { savedLogin = { cookie, identity }; return true; });
   await context.exposeBinding('androidRestore', () => { if (!savedLogin) return ''; cookie = savedLogin.cookie; return savedLogin.identity; });
   await context.addInitScript(() => {
+    globalThis.authScreenSeen = false;
+    new MutationObserver(() => {
+      const auth = document.getElementById('auth-screen');
+      if (auth && !auth.hidden) globalThis.authScreenSeen = true;
+    }).observe(document, { childList: true, subtree: true, attributes: true, attributeFilter: ['hidden'] });
     globalThis.WhisperNative = {
       request: (id, path, method, body) => { void globalThis.androidRequest(id, path, method, body); },
       saveLogin: identity => globalThis.androidSave(identity), restoreLogin: () => globalThis.androidRestore(),
@@ -50,7 +56,8 @@ async function client(browser) {
   const errors = []; page.on('pageerror', error => errors.push(error.message));
   await page.goto('https://appassets.androidplatform.net/index.html'); await expect(page.locator('#auth-submit')).toBeEnabled();
   return { context, page, errors, requests, getCookie: () => cookie, clears: () => clears, hasSavedLogin: () => Boolean(savedLogin),
-    restart: async () => { cookie = ''; await page.reload(); }, setOffline: value => { offline = value; } };
+    restart: async () => { cookie = ''; await page.reload({ waitUntil: 'commit' }); }, setOffline: value => { offline = value; },
+    holdRestore: () => { let release; restoreGate = new Promise(resolve => { release = resolve; }); return () => { restoreGate = null; release(); }; } };
 }
 
 test('Android packaged UI: durable login, devices, encrypted chat, 3-second images and logout', async ({ browser }) => {
@@ -97,14 +104,25 @@ test('Android packaged UI: durable login, devices, encrypted chat, 3-second imag
     expect(a.getCookie()).toBe(originalCookie); expect(a.hasSavedLogin()).toBe(true);
     await a.page.evaluate(() => globalThis.whisperAndroidResume());
     await expect(a.page.locator('.bubble').filter({ hasText: text })).toBeVisible();
-    await a.restart(); await expect(a.page.locator('#chat-screen')).toBeVisible();
+    const releaseRestore = a.holdRestore();
+    try {
+      await a.restart(); await expect(a.page.locator('#chat-screen')).toBeVisible();
+      await expect(a.page.locator('#login-restore-status')).toHaveText('正在同步会话…');
+      await expect(a.page.locator('#auth-screen')).not.toBeVisible();
+      await expect(a.page.locator('.bubble')).toHaveCount(0);
+      expect(await a.page.evaluate(() => globalThis.authScreenSeen)).toBe(false);
+      expect(await a.page.locator('#new-chat-form').evaluate(el => el.inert)).toBe(true);
+    } finally { releaseRestore(); }
+    await expect(a.page.locator('#login-restore-status')).toHaveCount(0);
     expect(a.requests.filter(r => r.path === '/api/auth/login').length).toBe(loginRequests);
     expect(a.getCookie()).toBe(originalCookie);
     await a.page.getByRole('button', { name: '与 android_bobby 的会话' }).click();
     await expect(a.page.locator('.bubble').filter({ hasText: text })).toBeVisible();
     a.setOffline(true); await a.restart();
     await expect(a.page.locator('#login-restore-status')).toContainText('已保留登录状态'); expect(a.hasSavedLogin()).toBe(true);
-    a.setOffline(false); await a.page.locator('#retry-login').click(); await expect(a.page.locator('#chat-screen')).toBeVisible();
+    await expect(a.page.locator('#chat-screen')).toBeVisible(); await expect(a.page.locator('#auth-screen')).not.toBeVisible();
+    expect(await a.page.evaluate(() => globalThis.authScreenSeen)).toBe(false);
+    a.setOffline(false); await a.page.locator('#retry-login').click(); await expect(a.page.locator('#login-restore-status')).toHaveCount(0);
     await a.page.getByRole('button', { name: '与 android_bobby 的会话' }).click();
     await expect(a.page.locator('.bubble').filter({ hasText: text })).toBeVisible();
     expect(a.requests.filter(r => r.path === '/api/auth/login').length).toBe(loginRequests);
@@ -140,6 +158,10 @@ test('Android packaged UI: durable login, devices, encrypted chat, 3-second imag
     await expect(b.page.locator('#auth-screen')).toBeVisible();
     expect(b.getCookie()).toBe(''); await expect(b.page.locator('.bubble')).toHaveCount(0);
     expect(b.hasSavedLogin()).toBe(false); await b.restart(); await expect(b.page.locator('#auth-screen')).toBeVisible();
+    await login(b, 'android_bobby');
+    app.db.prepare('DELETE FROM sessions WHERE user_id=(SELECT id FROM users WHERE username=?)').run('android_bobby');
+    await b.restart(); await expect(b.page.locator('#auth-screen')).toBeVisible();
+    await expect(b.page.locator('#chat-screen')).not.toBeVisible(); expect(b.hasSavedLogin()).toBe(false);
     const storage = await b.page.evaluate(() => Object.fromEntries(Object.entries(localStorage)));
     expect(Object.keys(storage).every(key => key.startsWith('whisper:public-key-pins:'))).toBe(true);
     expect(JSON.stringify(storage)).not.toContain(password); expect(JSON.stringify(storage)).not.toContain(text);
