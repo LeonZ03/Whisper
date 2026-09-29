@@ -43,7 +43,7 @@
 - `src/message-lifecycle.mjs` owns the browser countdown and disappearance effect. Countdown uses the existing absolute expiry, never a new lifetime starting at render time.
 - Reuse message DOM nodes across polls. Timer ticks update only changed labels and must preserve input focus, drafts, and reading position.
 - Clear the message content before animating the empty shell. Respect reduced motion; cancel timers and effects on conversation changes, logout, and disconnection.
-- Keep the ten-second view-once image flow separate from the message retention countdown. Viewing a consumed image must not become possible again.
+- Keep the three-second view-once image flow separate from the message retention countdown. Viewing a consumed image must not become possible again.
 - Browser regression: `npm.cmd run build` then `npm.cmd run test:e2e`. `tests/web-lifecycle.spec.mjs` uses an isolated browser fixture and controlled time.
 - Human-facing setup and important commands belong in README.md. AI constraints belong here. Keep CLI.md for detailed terminal behavior and cloud/DEPLOYMENT.md as the factual deployment checkpoint.
 - Git remote: `git@github.com:LeonZ03/Whisper.git`; branch: `main`. Inspect the staged file list before a commit. Use ordinary fast-forward pushes; verify local and remote commit IDs afterward.
@@ -51,6 +51,8 @@
 - Report Git synchronization and cloud deployment separately. Only a configured and verified Builds integration makes a push deploy code; it never migrates local chat data.
 
 ## Cloud deployment and operations
+
+- Owner-approved Android persistent login (2026-09-29) may retain only a device-bound Android Keystore AES-GCM encrypted session cookie and identity private key. Never persist original passwords, authKey, plaintext login files or messages. Backgrounding clears displayed content, explicit logout clears this vault, and server revocation remains enforced. This exception does not change web or CLI storage rules.
 
 - The owner approved `whisper.leonz03.dpdns.org`. Do not touch BeiPiao, the root hostname or other subdomains.
 - Cloud entry is `cloud/worker.mjs`; local entry remains `server/app.mjs`. Do not run the local launcher inside Workers.

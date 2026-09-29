@@ -6,6 +6,50 @@ export function remainingLabel(expiresAt, now = Date.now()) {
   const pad = (n) => String(n).padStart(2, '0');
   return { seconds, text: `剩余 ${days ? days + '天 ' : ''}${pad(Math.floor(rest / 3600))}:${pad(Math.floor(rest / 60) % 60)}:${pad(rest % 60)}` };
 }
+
+// Called by the view-once image deadline. Scrub the bitmap before adding an empty visual shell.
+// The caller owns the deadline and should call the returned cancel function on dialog teardown.
+export function dissolveViewOnceImage(image, { onComplete = () => {} } = {}) {
+  if (!image?.parentNode) return () => {};
+  const shell = document.createElement('span');
+  shell.className = 'image-dissolve-shell';
+  shell.setAttribute('aria-hidden', 'true');
+  for (let i = 0; i < 3; i++) {
+    const particle = document.createElement('i');
+    particle.className = 'dissolve-particle';
+    shell.append(particle);
+  }
+  image.removeAttribute('src');
+  image.removeAttribute('srcset');
+  image.alt = '';
+  image.hidden = true;
+  image.insertAdjacentElement('afterend', shell);
+  let finished = false;
+  let timer = null;
+  const finish = () => {
+    if (finished) return;
+    finished = true;
+    if (timer) clearTimeout(timer);
+    shell.removeEventListener('animationend', finish);
+    shell.remove();
+    image.hidden = false;
+    onComplete();
+  };
+  if (matchMedia('(prefers-reduced-motion: reduce)').matches) finish();
+  else {
+    shell.addEventListener('animationend', finish, { once: true });
+    timer = setTimeout(finish, 360);
+  }
+  return () => {
+    if (finished) return;
+    finished = true;
+    if (timer) clearTimeout(timer);
+    shell.removeEventListener('animationend', finish);
+    shell.remove();
+    image.hidden = false;
+  };
+}
+
 export class MessageLifecycle {
   constructor(box, onRetire = () => {}) {
     this.box = box; this.onRetire = onRetire;
@@ -59,6 +103,9 @@ export class MessageLifecycle {
     if (!animate || !el.isConnected || matchMedia('(prefers-reduced-motion: reduce)').matches) { done(); return; }
     const shell = document.createElement('div'); shell.className = 'message-expired-shell';
     shell.textContent = reason === 'expired' ? '消息已到期' : '消息已删除';
+    for (let i = 0; i < 3; i++) {
+      const particle = document.createElement('i'); particle.className = 'dissolve-particle'; particle.setAttribute('aria-hidden', 'true'); shell.append(particle);
+    }
     el.append(shell); el.style.minHeight = `${rect.height}px`; el.style.width = `${rect.width}px`;
     // The animation contains only the empty shell, never the expired text or image.
     el.addEventListener('animationend', done, { once: true });

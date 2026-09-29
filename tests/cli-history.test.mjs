@@ -75,8 +75,15 @@ test('501 messages: history pagination and lifecycle permissions', async () => {
       insert.run(m.id, b.selected.id, b.user.id, m.type, m.nonce, m.ciphertext, Date.now(), m.expiresAt);
       return m;
     };
-    const image = make('AA==', { type: 'image', mime: 'image/png' });
-    for (let i = 0; i < 500; i++) make(`历史样本 ${String(i).padStart(3, '0')}`);
+    // Seed this isolated fixture atomically instead of blocking its HTTP event
+    // loop for hundreds of synchronous filesystem commits on Windows.
+    let image;
+    app.db.exec('BEGIN');
+    try {
+      image = make('AA==', { type: 'image', mime: 'image/png' });
+      for (let i = 0; i < 500; i++) make(`历史样本 ${String(i).padStart(3, '0')}`);
+      app.db.exec('COMMIT');
+    } catch (error) { app.db.exec('ROLLBACK'); throw error; }
     await a.sync(); assert.equal(a.messages.length, 200); assert.equal(a.hasOlder, true);
     assert.equal(await a.loadOlder(), 200); assert.equal(await a.loadOlder(), 101);
     assert.equal(a.messages.length, 501); assert.equal(a.hasOlder, false);

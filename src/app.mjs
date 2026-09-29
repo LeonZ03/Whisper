@@ -1,18 +1,37 @@
 import { ready, b64, unb64, wipe, deriveCredentials, unlockIdentity, encryptMessage, decryptMessage, safetyCode } from './crypto.mjs';
-import { MessageLifecycle } from './message-lifecycle.mjs';
+import { MessageLifecycle, dissolveViewOnceImage } from './message-lifecycle.mjs';
+import { createAccountSessionsUI } from './account-sessions-ui.mjs';
 import { accountUI } from './account-ui.mjs';
 import { prepareEnrollment, validateNewPassword } from './account-client.mjs';
+import { requestAPI as api } from './api-transport.mjs';
 const $ = (id) => document.getElementById(id);
+const android = Boolean(globalThis.whisperAndroidRequest);
+function mobileView(view) {
+  if (!android) return;
+  $('chat-screen').dataset.view = view;
+  $('my-panel').hidden = view !== 'my';
+  $('admin-panel').hidden = view !== 'admin';
+  $('chat-body').hidden = view === 'my' || view === 'admin';
+  $('chat-screen').querySelector('.app-header').hidden = view === 'chat' || view === 'my';
+  $('mobile-nav').hidden = view === 'chat';
+  for (const name of ['conversations', 'my']) {
+    $(`nav-${name}`).classList.toggle('active', name === view);
+    $(`nav-${name}`).setAttribute('aria-current', name === view ? 'page' : 'false');
+  }
+}
 for (const label of document.querySelectorAll('[data-app-version]')) label.textContent = `v${__APP_VERSION__}`;
 let self = null, selected = null, conversations = [], messages = [], mode = 'login';
 let syncing = false, generation = 0, toastTimer, signature = '', imageTimer, imageUrl, viewingId, safetyPeer;
 let blocked = false, sending = false;
 let cloudMode = false, pollIntervalMs = 1500, nextPollAt = 0;
+let androidPaused = false;
+let restoringLogin = false, savedLoginPending = false;
+let cancelImageDissolve = null;
 const messageCards = new Map();
 const sendPreviews = new Map();
 const lifecycle = new MessageLifecycle($('messages'), (id) => {
   messageCards.delete(id); messages = messages.filter((m) => m.id !== id);
-  if (viewingId === id) closeImage();
+  if (viewingId === id) closeImage(true);
 });
 function clearMessageView() { lifecycle.clear(); messageCards.clear(); for (const preview of sendPreviews.values()) clearTimeout(preview.timer); sendPreviews.clear(); messages = []; signature = ''; }
 const pins = () => {
@@ -51,17 +70,6 @@ function removeSendPreview(id) {
   const preview = sendPreviews.get(id); if (!preview) return;
   clearTimeout(preview.timer); preview.article.replaceChildren(); preview.article.remove(); sendPreviews.delete(id);
 }
-async function api(path, method = 'GET', body) {
-  let response;
-  try {
-    response = await fetch(path, { method, credentials: 'same-origin', cache: 'no-store', signal: AbortSignal.timeout(20_000),
-      headers: method === 'GET' ? {} : { 'Content-Type': 'application/json', 'X-Whisper-Request': '1' },
-      body: method === 'GET' ? undefined : JSON.stringify(body ?? {}) });
-  } catch { throw new Error('连接中断。请确认本机服务与临时隧道仍在运行。'); }
-  const result = await response.json().catch(() => ({ error: '服务器返回了无效响应。' }));
-  if (!response.ok) { const error = new Error(result.error || '请求失败。'); error.status = response.status; throw error; }
-  return result;
-}
 function setMode(next) {
   mode = next; $('register-fields').hidden = mode !== 'register';
   $('activation-field').hidden = mode !== 'login' || $('username').value.trim().toLowerCase() !== 'root';
@@ -70,6 +78,10 @@ function setMode(next) {
   $('password').placeholder = mode === 'register' ? '新密码：1–12 个字符' : '请输入完整密码（旧长密码仍可登录）';
   $('auth-title').textContent = mode === 'register' ? '申请一个账号' : '回到你的会话';
   $('auth-subtitle').textContent = mode === 'register' ? '管理员批准后才能登录。身份密钥将在你的浏览器生成。' : '使用用户名和密码登录，并在本机解锁密钥。';
+  if (android) {
+    $('auth-subtitle').textContent = mode === 'register' ? '账号申请获批后即可登录。' : '与网页、CLI 共用云端账号';
+    $('password').placeholder = mode === 'register' ? '新密码：1–12 个字符' : '请输入密码';
+  }
   $('auth-submit').textContent = mode === 'register' ? '提交申请' : '解锁并进入';
   $('auth-error').textContent = '';
   for (const item of ['login', 'register']) { $(`${item}-tab`).classList.toggle('active', item === mode); $(`${item}-tab`).setAttribute('aria-selected', String(item === mode)); }
@@ -94,6 +106,7 @@ $('recovery-form').onsubmit = async event => {
 };
 $('auth-form').onsubmit = async (event) => {
   event.preventDefault(); if ($('auth-submit').disabled) return;
+  if (android && savedLoginPending) { generation++; savedLoginPending = false; globalThis.whisperAndroidClearSession(); hideRestoreNotice(); }
   const username = $('username').value.trim().toLowerCase(); let password = $('password').value;
   const currentMode = mode; const activationCode = $('activation-code').value; let credentials, secretKey;
   $('auth-submit').disabled = true; $('login-tab').disabled = true; $('register-tab').disabled = true;
@@ -111,14 +124,7 @@ $('auth-form').onsubmit = async (event) => {
     let user;
     user = await api('/api/auth/login', 'POST', { username, authKey: b64(credentials.authKey), activationCode });
     secretKey = unlockIdentity(user, credentials.vaultKey);
-    self = { id: user.id, username: user.username, publicKey: user.publicKey, secretKey, role: user.role, mustChangePassword: user.mustChangePassword, activationCode: user.mustChangePassword ? activationCode : '' };
-    generation++; $('auth-screen').hidden = true; $('chat-screen').hidden = false;
-    $('self-name').textContent = '@' + self.username;
-    $('entry-kind').textContent = cloudMode ? '云端服务' : location.hostname.endsWith('.trycloudflare.com') ? '临时链接入口' : '本机入口';
-    $('activation-code').value = ''; selected = null; conversations = []; messages = []; signature = ''; renderConversations();
-    $('empty-state').hidden = false; $('conversation-panel').hidden = true;
-    await accountControls.enter(self);
-    if (self.role === 'member') await sync();
+    await enterUser(user, secretKey, activationCode, true);
   } catch (error) {
     if (!self) wipe(secretKey); $('auth-error').textContent = error.message;
   } finally {
@@ -127,14 +133,78 @@ $('auth-form').onsubmit = async (event) => {
     $('auth-submit').textContent = mode === 'register' ? '提交申请' : '解锁并进入';
   }
 };
+async function enterUser(user, secretKey, activationCode = '', save = false) {
+  self = { id: user.id, username: user.username, publicKey: user.publicKey, secretKey, role: user.role, mustChangePassword: user.mustChangePassword, activationCode: user.mustChangePassword ? activationCode : '' };
+  generation++; $('auth-screen').hidden = true; $('chat-screen').hidden = false; hideRestoreNotice();
+  $('self-name').textContent = '@' + self.username;
+  if (android) {
+    $('my-name').textContent = self.username; $('my-avatar').textContent = self.username[0].toUpperCase();
+    $('my-role').textContent = self.role === 'root' ? '云端管理员' : '云端账号';
+    $('nav-conversations').querySelector('span').textContent = self.role === 'root' ? '管理' : '会话';
+    mobileView(self.role === 'root' ? 'admin' : 'conversations');
+    const current = self;
+    if (save && !self.mustChangePassword && !await globalThis.whisperAndroidSaveLogin({ v: 1, id: self.id, username: self.username, publicKey: self.publicKey, secretKey: b64(secretKey) }))
+      toast('无法保存登录状态，请检查手机存储空间后重新登录。');
+    if (self !== current) return;
+  }
+  $('entry-kind').textContent = cloudMode ? '云端服务' : location.hostname.endsWith('.trycloudflare.com') ? '临时链接入口' : '本机入口';
+  $('activation-code').value = ''; selected = null; conversations = []; messages = []; signature = ''; renderConversations();
+  $('empty-state').hidden = false; $('conversation-panel').hidden = true;
+  await accountControls.enter(self);
+  if (self?.role === 'member') await sync();
+}
+function hideRestoreNotice() { $('login-restore-status')?.remove(); $('retry-login')?.remove(); }
+function restoreNotice(text) {
+  hideRestoreNotice();
+  const status = document.createElement('p'); status.id = 'login-restore-status'; status.className = 'field-help'; status.setAttribute('role', 'status'); status.textContent = text;
+  const retry = document.createElement('button'); retry.id = 'retry-login'; retry.type = 'button'; retry.className = 'quiet'; retry.textContent = '重试恢复登录'; retry.onclick = () => void restoreAndroidLogin();
+  $('auth-form').before(status, retry);
+}
+async function restoreAndroidLogin() {
+  if (!android || self || restoringLogin || androidPaused) return;
+  let key, saved; const epoch = generation; restoringLogin = true;
+  try {
+    saved = await globalThis.whisperAndroidRestoreLogin(); if (epoch !== generation) return;
+    if (!saved) { savedLoginPending = false; return; }
+    savedLoginPending = true; $('auth-submit').disabled = true; $('auth-submit').textContent = '正在恢复登录…';
+    if (saved.v !== 1 || typeof saved.id !== 'string' || typeof saved.publicKey !== 'string' || typeof saved.secretKey !== 'string') throw Object.assign(Error('保存的身份无效'), { status: 401 });
+    const me = await api('/api/account/me');
+    if (epoch !== generation || androidPaused) return;
+    if (me.id !== saved.id || me.publicKey !== saved.publicKey || me.mustChangePassword) throw Object.assign(Error('账号状态已变化'), { status: 401 });
+    key = unb64(saved.secretKey); if (key.length !== 32) throw Object.assign(Error('保存的身份无效'), { status: 401 });
+    savedLoginPending = false; const sessionKey = key; key = null; await enterUser(me, sessionKey);
+  } catch (error) {
+    if (epoch !== generation) return;
+    if (error.status === 401 || error.status === 403) { lock(); toast('登录已撤销或账号已变化，请重新登录。'); }
+    else { savedLoginPending = true; restoreNotice('暂时无法连接，已保留登录状态。联网后可自动恢复，或点击重试。'); }
+  } finally {
+    wipe(key); saved = null; restoringLogin = false;
+    $('auth-submit').disabled = false; $('auth-submit').textContent = mode === 'register' ? '提交申请' : '解锁并进入';
+    if (savedLoginPending && epoch !== generation && !androidPaused) void restoreAndroidLogin();
+  }
+}
 function lock() {
+  savedLoginPending = false; hideRestoreNotice();
   generation++; wipe(self?.secretKey); self = null; selected = null; conversations = []; messages = []; signature = '';
   accountControls.clear();
+  sessionsUI?.clear();
   closeImage(); $('safety-dialog').close(); $('message-input').value = ''; $('password').value = ''; $('activation-code').value = '';
   clearMessageView(); $('conversations').replaceChildren(); $('safety-code').textContent = '';
   $('chat-screen').hidden = true; $('auth-screen').hidden = false;
+  if (android) {
+    globalThis.whisperAndroidClearSession(); mobileView('conversations');
+    $('my-name').textContent = ''; $('my-avatar').textContent = ''; $('privacy-dialog').close();
+    $('chat-options').close();
+    for (const input of document.querySelectorAll('input[type="password"]')) input.value = '';
+  }
 }
 const accountControls = accountUI({ api, getSelf: () => self, lock, toast });
+const sessionsUI = android ? createAccountSessionsUI({ root: $('account-sessions').querySelector('[data-account-sessions-list]'),
+  fetchImpl: async (path, options) => {
+    const payload = await api(path); if (options.signal.aborted) throw new DOMException('Aborted', 'AbortError');
+    return { ok: true, json: async () => payload };
+  } }) : null;
+if (android) $('mobile-nav').before($('admin-panel'));
 $('logout').onclick = async () => { try { await api('/api/auth/logout', 'POST'); } catch {} finally { lock(); } };
 function renderConversations() {
   const fragment = document.createDocumentFragment();
@@ -155,6 +225,7 @@ function checkTrust() {
   const verified = !blocked && pin?.verified;
   $('trust-notice').className = 'trust-notice' + (blocked ? ' blocked' : verified ? ' verified' : '');
   $('trust-notice').textContent = blocked ? '对方身份公钥发生变化。已阻止发送与解密。请通过可信外部渠道核对新的完整安全码，再明确更新本机信任记录。' : verified ? '已在此浏览器核对安全码。请仍注意终端安全和截图风险。' : '首次会话，请通过可信渠道核对双方安全码；首次自动记住公钥不等于验证身份。';
+  if (android) $('trust-notice').textContent = blocked ? '对方身份已变化，请核对新安全码后继续。' : verified ? '已核对安全码' : '首次会话，请核对安全码';
   $('verify').textContent = blocked ? '核对新身份' : verified ? '已核对安全码' : '核对安全码';
   $('send').disabled = blocked || sending; $('image-button').disabled = blocked || sending;
 }
@@ -163,7 +234,8 @@ async function selectConversation(c) {
   $('empty-state').hidden = true; $('conversation-panel').hidden = false;
   $('peer-title').textContent = c.peer.username; $('peer-avatar').textContent = c.peer.username[0];
   clearMessageView(); checkTrust(); renderConversations();
-  await refreshMessages(); $('message-input').focus();
+  mobileView('chat');
+  await refreshMessages(); if (!android) $('message-input').focus();
 }
 $('new-chat-form').onsubmit = async (event) => {
   event.preventDefault(); const button = event.submitter; if (button) button.disabled = true;
@@ -187,6 +259,7 @@ async function refreshMessages(prefetched) {
   connection(true);
 }
 async function sync(force = true) {
+  if (androidPaused) return;
   if (!force && ((cloudMode && document.hidden) || Date.now() < nextPollAt)) return;
   nextPollAt = Date.now() + pollIntervalMs;
   if (!self || self.role !== 'member' || syncing) return; syncing = true; const epoch = generation;
@@ -312,7 +385,7 @@ $('image-button').onclick = () => { if (!blocked && !sending) $('image-input').c
 $('image-input').onchange = async () => {
   const file = $('image-input').files[0]; $('image-input').value = '';
   if (!file || !self || !selected || blocked || sending) return;
-  if (!confirm('发送一次查看图片？对方打开后显示 10 秒，未打开最多保留 24 小时；无法阻止截图。GIF 将转换为静态图片。')) return;
+  if (!confirm('发送一次查看图片？对方打开后显示 3 秒，未打开最多保留 24 小时；无法阻止截图。GIF 将转换为静态图片。')) return;
   const c = selected, user = self; sending = true; checkTrust(); let prepared;
   try {
     prepared = await prepareImage(file); if (self !== user) return;
@@ -322,38 +395,88 @@ $('image-input').onchange = async () => {
 };
 async function openImage(m, button) {
   if (!self || !selected || blocked || viewingId) return;
-  if (!confirm('现在打开？关闭、切换标签页或 10 秒后将无法再次查看。网络中断也可能导致图片失效。')) return;
+  if (!confirm('现在打开？关闭、切换标签页或 3 秒后将无法再次查看。网络中断也可能导致图片失效。')) return;
   const user = self, peer = selected.peer, c = selected.id; button.disabled = true;
   try {
     const envelope = await api('/api/messages/' + m.id + '/open', 'POST');
-    if (self !== user || selected?.id !== c) return;
+    if (self !== user || selected?.id !== c || androidPaused) return;
     const payload = decryptMessage(envelope, user, peer);
     if (!['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(payload.mime)) throw new Error('图片格式无效。');
     const bytes = unb64(payload.body); imageUrl = URL.createObjectURL(new Blob([bytes], { type: payload.mime })); wipe(bytes);
-    viewingId = m.id; $('view-image').src = imageUrl;
+    viewingId = m.id; $('view-image').alt = '阅后图片'; $('view-image').src = imageUrl;
     await $('view-image').decode();
     if (self !== user || selected?.id !== c || viewingId !== m.id || m.expiresAt <= Date.now()) { closeImage(); return; }
     $('image-dialog').showModal();
-    const deadline = Math.min(Date.now() + 10_000, m.expiresAt);
-    const tick = () => { const seconds = Math.max(0, Math.ceil((deadline - Date.now()) / 1000)); $('image-countdown').textContent = `${seconds} 秒后关闭`; if (!seconds) closeImage(); };
+    const deadline = Math.min(Date.now() + 3_000, m.expiresAt);
+    const tick = () => { const seconds = Math.max(0, Math.ceil((deadline - Date.now()) / 1000)); $('image-countdown').textContent = `${seconds} 秒后关闭`; if (!seconds) closeImage(true); };
     tick(); imageTimer = setInterval(tick, 200); await refreshMessages();
   } catch (error) { closeImage(); toast(error.message); await refreshMessages().catch(() => {}); }
   finally { button.disabled = false; }
 }
-function closeImage() { clearInterval(imageTimer); imageTimer = null; $('image-dialog').close(); $('view-image').removeAttribute('src'); if (imageUrl) URL.revokeObjectURL(imageUrl); imageUrl = null; viewingId = null; }
-$('close-image').onclick = closeImage; $('image-dialog').addEventListener('cancel', closeImage);
+function closeImage(animate = false) {
+  clearInterval(imageTimer); imageTimer = null;
+  cancelImageDissolve?.(); cancelImageDissolve = null;
+  const image = $('view-image'), dialog = $('image-dialog'); const visible = dialog.open && Boolean(imageUrl);
+  image.removeAttribute('src'); image.removeAttribute('srcset');
+  if (imageUrl) URL.revokeObjectURL(imageUrl); imageUrl = null; viewingId = null;
+  if (animate === true && visible && !androidPaused && !document.hidden) {
+    $('image-countdown').textContent = '图片已销毁';
+    cancelImageDissolve = dissolveViewOnceImage(image, { onComplete: () => { cancelImageDissolve = null; dialog.close(); } });
+  } else { image.hidden = false; dialog.close(); }
+}
+$('close-image').onclick = () => closeImage(true); $('image-dialog').addEventListener('cancel', () => closeImage());
+if (android) {
+  const leaveChat = (view) => {
+    generation++; closeImage(); $('safety-dialog').close(); selected = null; clearMessageView();
+    $('message-input').value = ''; $('conversation-panel').hidden = true; $('empty-state').hidden = false;
+    mobileView(view); renderConversations();
+  };
+  $('chat-back').onclick = () => leaveChat('conversations');
+  $('nav-conversations').onclick = () => leaveChat(self?.role === 'root' ? 'admin' : 'conversations');
+  $('nav-my').onclick = () => { leaveChat('my'); void sessionsUI.load(); };
+  $('privacy-button').onclick = () => $('privacy-dialog').showModal();
+  $('privacy-close').onclick = () => $('privacy-dialog').close();
+  $('chat-menu-button').onclick = () => $('chat-options').showModal();
+  $('chat-options-close').onclick = () => $('chat-options').close();
+  $('trust-notice').onclick = () => $('verify').click();
+  $('verify').addEventListener('click', () => $('chat-options').close());
+  $('clear-chat').addEventListener('click', () => $('chat-options').close());
+  globalThis.whisperAndroidBack = () => {
+    const dialog = [...document.querySelectorAll('dialog[open]')].at(-1);
+    if (dialog) {
+      if (!dialog.dispatchEvent(new Event('cancel', { cancelable: true }))) return;
+      dialog.close(); return;
+    }
+    if (self && $('chat-screen').dataset.view === 'chat') leaveChat('conversations');
+    else if (self && $('chat-screen').dataset.view === 'my') leaveChat(self.role === 'root' ? 'admin' : 'conversations');
+    else globalThis.whisperAndroidExit();
+  };
+  globalThis.whisperAndroidPause = () => { androidPaused = true; generation++; closeImage(); clearMessageView(); sessionsUI.clear(); };
+  globalThis.whisperAndroidResume = () => {
+    androidPaused = false; lifecycle.tick({ animate: false });
+    if (savedLoginPending) void restoreAndroidLogin();
+    else { void sync(); if (self && $('chat-screen').dataset.view === 'my') void sessionsUI.load(); }
+  };
+  globalThis.whisperAndroidLock = lock;
+  globalThis.whisperAndroidSessionRevoked = () => { if (self) { lock(); toast('登录已撤销，请重新登录。'); } };
+}
 document.addEventListener('visibilitychange', () => {
   lifecycle.tick({ animate: false });
   if (document.hidden) closeImage(); else sync();
 });
 window.addEventListener('focus', () => lifecycle.tick({ animate: false }));
 window.addEventListener('offline', () => { connection(false); closeImage(); clearMessageView(); signature = ''; });
-window.addEventListener('online', sync);
-window.addEventListener('pagehide', lock);
+window.addEventListener('online', () => { if (savedLoginPending) void restoreAndroidLogin(); else void sync(); });
+window.addEventListener('pagehide', () => { if (android) globalThis.whisperAndroidPause(); else lock(); });
 setInterval(() => sync(false), 500);
 try {
   if (!window.isSecureContext || !crypto.subtle) throw new Error('请使用 http://127.0.0.1 本机地址或 HTTPS 临时网址。');
-  await ready; const health = await api('/api/health'); cloudMode = health.environment === 'cloud';
+  await ready;
+  let health;
+  try { health = await api('/api/health'); }
+  catch (error) { if (!android) throw error; health = { environment: 'cloud', pollIntervalMs: 2000 }; }
+  cloudMode = health.environment === 'cloud';
   if (cloudMode) pollIntervalMs = Math.max(2000, Number(health.pollIntervalMs) || 2000);
   $('auth-submit').disabled = false; setMode('login');
+  if (android) await restoreAndroidLogin();
 } catch (error) { $('auth-error').textContent = '加密组件无法启动：' + error.message; $('auth-submit').textContent = '无法启动'; }

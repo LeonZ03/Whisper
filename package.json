@@ -1,6 +1,6 @@
 {
   "name": "whisper-local",
-  "version": "0.5.2",
+  "version": "0.5.3",
   "private": true,
   "type": "module",
   "engines": {
@@ -8,6 +8,10 @@
   },
   "scripts": {
     "build": "node scripts/build.mjs",
+    "build:android:web": "node scripts/build-android-web.mjs",
+    "build:android": "node scripts/build-android.mjs",
+    "test:android": "playwright test --config=playwright.android.config.mjs",
+    "test:android:package": "node --test tests/android-package.test.mjs",
     "start": "node --no-warnings scripts/launch.mjs",
     "start:local": "node --no-warnings scripts/launch.mjs --local-only",
     "test": "node --test tests/crypto.test.mjs tests/server.test.mjs tests/account.test.mjs tests/account-flow.test.mjs tests/cli.test.mjs tests/cli-history.test.mjs tests/cli-color.test.mjs tests/cli-interaction.test.mjs",
@@ -19,7 +23,7 @@
     "test:cli:package": "node scripts/test-cli-package.mjs",
     "test:cli:install": "node --test --test-force-exit tests/cli-install.test.mjs",
     "build:cloud": "node scripts/build-cloud.mjs",
-    "test:cloud": "node --test tests/cloud.test.mjs",
+    "test:cloud": "node --test tests/cloud.test.mjs tests/session-devices.test.mjs",
     "deploy:cloud": "wrangler d1 migrations apply whisper-production --remote && wrangler deploy",
     "dev:cloud": "wrangler dev",
     "test:cloud:e2e": "playwright test --config=playwright.cloud.config.mjs",

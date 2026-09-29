@@ -69,7 +69,7 @@ export class WhisperClient {
     try {
       response = await this.fetchImpl(this.server + path, {
         method, redirect: 'error', cache: 'no-store', signal: AbortSignal.timeout(timeoutMs),
-        headers: { Accept: 'application/json', ...(this.cookie ? { Cookie: this.cookie } : {}), ...(method === 'GET' ? {} : { 'Content-Type': 'application/json', Origin: this.server, 'X-Whisper-Request': '1' }) },
+        headers: { Accept: 'application/json', 'X-Whisper-Client': 'cli', 'X-Whisper-Device': `CLI / ${process.platform === 'win32' ? 'Windows' : process.platform}`.slice(0, 128), 'User-Agent': `WhisperCLI/Node (${process.platform})`.slice(0, 128), ...(this.cookie ? { Cookie: this.cookie } : {}), ...(method === 'GET' ? {} : { 'Content-Type': 'application/json', Origin: this.server, 'X-Whisper-Request': '1' }) },
         body: method === 'GET' ? undefined : JSON.stringify(body ?? {}),
       });
     } catch { this.connected = false; throw new Error('连接中断或请求超时。检查服务地址；本机先运行 start.cmd。'); }

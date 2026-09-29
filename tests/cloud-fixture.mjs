@@ -17,7 +17,7 @@ export async function cloudFixture() {
     const url=String(await mf.ready).replace(/\/$/,'');
     const db=await mf.getD1Database('DB');
     // D1 exec is line-oriented; prepared batch accepts the complete SQL migration.
-    const sql=['0001_initial.sql','0002_accounts.sql'].map(name=>readFileSync(`cloud/migrations/${name}`,'utf8')).join('\n');
+    const sql=['0001_initial.sql','0002_accounts.sql','0003_session_devices.sql'].map(name=>readFileSync(`cloud/migrations/${name}`,'utf8')).join('\n');
     const statements=[];let current='';for(const line of sql.split('\n')){const clean=line.replace(/--.*$/,'').trim();if(!clean)continue;current+=' '+clean;if(clean.endsWith(';')&&(!/^CREATE TRIGGER/i.test(current.trim())||/END;$/.test(clean))){statements.push(current.trim());current='';}} if(current.trim())throw Error('Incomplete test migration');await db.batch(statements.map(s=>db.prepare(s)));
     return {mf,db,url,async approve(username){return db.prepare("UPDATE users SET status='active', reviewed_at=? WHERE username=? AND status='pending'").bind(Date.now(),username).run();},async close(){await mf.dispose();rmSync(dir,{recursive:true,force:true,maxRetries:6,retryDelay:300});}};
   }catch(error){await mf.dispose();rmSync(dir,{recursive:true,force:true});throw error;}

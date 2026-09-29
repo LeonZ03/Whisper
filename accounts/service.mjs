@@ -1,4 +1,5 @@
 import { fail, USERNAME, UUID, randomB64, digest, mac, equal, validB64, SECURITY_HEADERS } from '../cloud/security.mjs';
+import { sessionDevice, APP_SESSION_EXPIRES_AT, APP_COOKIE_MAX_AGE } from './session-devices.mjs';
 const json = (data, status = 200, headers = {}) => Response.json(data, { status, headers: { ...SECURITY_HEADERS, ...headers } });
 const tokenOf = request => /(?:^|;\s*)whisper_session=([A-Za-z0-9_-]{43})(?:;|$)/.exec(request.headers.get('Cookie') || '')?.[1];
 const cookie = (value, origin, age = 43200) => `whisper_session=${value}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${age}${origin.startsWith('https:') ? '; Secure' : ''}`;
@@ -46,18 +47,20 @@ export function accountService({ db, request, origin, body = {}, pepper, hashCre
   async function issue(user) {
     const token = randomB64(32).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/, '');
     const tokenHash = await digest(token);
-    const insert = stmt("INSERT INTO sessions(token_hash,user_id,created_at,expires_at,credential_version) SELECT ?,id,?,?,credential_version FROM users WHERE id=? AND credential_version=? AND auth_hash=? AND status='active' AND (auth_scheme<>'root-bootstrap-hmac-v1' OR root_activation_consumed=0) RETURNING user_id", tokenHash, Date.now(), Date.now() + 43200000, user.id, user.credential_version, user.auth_hash);
-    let result;
+    const device = sessionDevice(request), now = Date.now();
+    const expiresAt = device.method === 'app' ? APP_SESSION_EXPIRES_AT : now + 43200000;
+    const insert = stmt("INSERT INTO sessions(token_hash,user_id,created_at,expires_at,credential_version) SELECT ?,id,?,?,credential_version FROM users WHERE id=? AND credential_version=? AND auth_hash=? AND status='active' AND (auth_scheme<>'root-bootstrap-hmac-v1' OR root_activation_consumed=0) RETURNING user_id", tokenHash, now, expiresAt, user.id, user.credential_version, user.auth_hash);
+    const commands = [insert,
+      stmt('INSERT INTO session_devices(token_hash,public_id,method,device,ip) SELECT token_hash,?,?,?,? FROM sessions WHERE token_hash=?', crypto.randomUUID(), device.method, device.device, String(ip).replace(/[\u0000-\u001f\u007f]/g, '').slice(0, 80), tokenHash)];
     if (user.role === 'root') {
-      const committed = await db.batch([
-        insert,
+      commands.push(
         stmt('INSERT INTO root_login_log(timestamp,result,ip,location) SELECT ?,?,?,? WHERE EXISTS(SELECT 1 FROM sessions WHERE token_hash=?)', Date.now(), user.must_change ? 'success_initial' : 'success', String(ip).slice(0, 80), JSON.stringify(location), tokenHash),
         stmt('DELETE FROM auth_failures WHERE scope=?', await attemptScope(user.username))
-      ]);
-      result = committed[0].results?.[0];
-    } else result = await insert.first();
+      );
+    }
+    const committed = await db.batch(commands), result = committed[0].results?.[0];
     if (!result) fail(409, user.role === 'root' && user.auth_scheme === 'root-bootstrap-hmac-v1' ? '首次激活码已使用；请使用现有会话改密，或由所有者执行恢复。' : '账号状态已更新，请重新登录。');
-    return { 'Set-Cookie': cookie(token, origin) };
+    return { 'Set-Cookie': cookie(token, origin, device.method === 'app' ? APP_COOKIE_MAX_AGE : 43200) };
   }
   async function reauthenticate(user, key, activationCode) {
     await checkAttempts(user.username);
@@ -116,6 +119,15 @@ export function accountService({ db, request, origin, body = {}, pepper, hashCre
       return json(vaultUser(u), 200, headers);
     }
     if (path === '/api/account/me' && method === 'GET') return json(vaultUser(await authorize({ allowForced: true })));
+    if (path === '/api/account/sessions' && method === 'GET') {
+      const user = await authorize(), currentHash = await digest(tokenOf(request));
+      const rows = await all('SELECT s.token_hash,s.created_at,s.expires_at,d.public_id,d.method,d.device,d.ip FROM sessions s JOIN users u ON u.id=s.user_id LEFT JOIN session_devices d ON d.token_hash=s.token_hash WHERE s.user_id=? AND s.expires_at>? AND s.credential_version=u.credential_version AND u.status=\'active\' ORDER BY s.created_at DESC,s.rowid DESC', user.id, Date.now());
+      return json({ sessions: await Promise.all(rows.map(async row => ({
+        id: row.public_id || await digest('session-public-v1:' + row.token_hash),
+        method: row.method || 'unknown', device: row.device || '未知设备', ip: row.ip || 'unknown',
+        createdAt: row.created_at, expiresAt: row.expires_at, current: row.token_hash === currentHash
+      }))) });
+    }
     if (path === '/api/account/password' && method === 'POST') {
       const u = await authorize({ allowForced: true });
       await reauthenticate(u, body.currentAuthKey, body.activationCode); checkEnvelope(body);

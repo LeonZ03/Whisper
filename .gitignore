@@ -35,3 +35,9 @@ Thumbs.db
 # Generated cloud assets and isolated cloud tests
 .cloud/
 .cloud-test/
+
+# Android generated packages, SDK caches and private signing material
+android/build/
+android/local.properties
+*.keystore
+*.jks
