@@ -19,14 +19,14 @@
 
 写接口提交后触发通知。通知异常不得改变成功的写入结果。账号操作触发连接复核，撤销连接不再接收变化通知；不能依靠前台主动退出保证撤销。通知遗漏由每 60–90 秒一次的增量校验及重连补拉恢复。正常连接停用旧高频轮询；断线使用 30–45 秒备用同步，重连指数退避并抖动，上限 60 秒；网络恢复可以立即重试一次。前后台变化暂停/恢复连接，恢复先补拉。
 
-## 分工与待验收
+## 实施分工
 
 - 后端：云端/本机接口、journal、DO、权限和限流，以及隔离后端测试。
 - 共用网页/App：`src/app.mjs`、`src/realtime-client.mjs`、Android 桥接及生命周期、相关测试。共享连接控制器导出 `RealtimeConnection`，构造参数 `{request, url, onChange, onState, WebSocketImpl=globalThis.WebSocket}`；方法 `start()`, `stop()`, `reconnect()`；状态回调字符串 `connecting`/`open`/`closed`。request 采用 `(path,method,body)`；url 为 WebSocket 地址。控制器负责票据、心跳、重连及低频 onChange，onChange 由调用方串行执行并去重。stop 清除全部定时器与连接。
 - CLI：消费以上协议与控制器，保留终端、身份和受保护登录，覆盖 Windows/Linux；只修改 cli 及其专项测试。
 - 主任务：接口审查、发布打包、Linux 安装收尾、文档、集成验证与发布。共享输出的构建和完整测试串行进行。
 
-新增 D1 迁移将先在隔离数据库验证既有写接口和回滚兼容性，再按 AGENTS.md 单独交所有者审核；此文件不是迁移批准记录。
+新增 D1 迁移已在隔离数据库验证既有写接口和回滚兼容性，2026-09-29 经所有者单独批准后应用并完成正式发布。具体迁移、提交、线上验收与真机待办记录在 [DEPLOYMENT.md](DEPLOYMENT.md)。
 
 ## 已核实的免费套餐能力
 
