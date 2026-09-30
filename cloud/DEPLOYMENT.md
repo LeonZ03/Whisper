@@ -2,11 +2,11 @@
 
 ## 当前状态
 
-正式入口为 `https://whisper.leonz03.dpdns.org`，Worker 为 `whisper`，数据库为独立的 `whisper-production`。当前正式版本为 `0.6.0`（2026-09-29），实时通信功能提交为 `3bf68aca3a11fb278ea16a1e63dbf68ebbd7ab21`；账号审批升级于 2026-09-24 上线为 `0.5.0`。只从本机网络核验正式 HTTPS / WSS，未做独立网络测试或安全审计。下表保留历史里程碑；当前发布详情见 0.6.0 小节。
+正式入口为 `https://whisper.leonz03.dpdns.org`，Worker 为 `whisper`，数据库为独立的 `whisper-production`。当前正式版本为 `0.6.1`（2026-09-30），客户端更新功能提交为 `47aadad0c17b65ba0a7d6aa8b51d132015619bac`；账号审批升级于 2026-09-24 上线为 `0.5.0`。只从本机网络核验正式 HTTPS / WSS，未做独立网络测试或安全审计。下表保留历史里程碑；当前发布详情见 0.6.1 小节。
 
 | 阶段 | 状态 |
 | --- | --- |
-| 正式域名与 Worker | HTTPS `/api/health` 返回 200、`0.6.0` 和 `3bf68aca3a11fb278ea16a1e63dbf68ebbd7ab21`；Worker `whisper` |
+| 正式域名与 Worker | HTTPS `/api/health` 返回 200、`0.6.1` 和功能提交 `47aadad0c17b65ba0a7d6aa8b51d132015619bac`；Worker `whisper`。后续文档回填提交沿用自动部署 |
 | 兼容过渡代码 | `a9963b7` 推送 main；自动构建检查失败，使用 `deploy:cloud:code` 手动发布，正式健康检查确认该提交 |
 | 独立 D1 迁移 | 兼容版本在线时应用 `0002_accounts.sql`；Wrangler 报告成功，之后无待应用迁移 |
 | 完整审批认证代码 | `f2e0557` 推送 main；Cloudflare Builds `b1c692ba` 检查成功，正式 `/api/health` 返回相同完整提交号 |
@@ -20,17 +20,25 @@
 
 ## 发布顺序
 
-### 0.6.1 客户端自更新：本地验收完成，等待 GitHub 资产发布
+### 0.6.1 客户端自更新：GitHub Release 与正式站已发布，真机流程待验证
 
 Windows / Linux CLI 增加 `whisper update`，复用现有校验安装器并保留安装路径、公钥 pins 与受保护登录；App 增加启动检查及“我的 → 应用版本”更新入口。App 只从正式域名下载清单和 APK，不跳转 GitHub；APK 经大小、SHA-256、包名、递增版本码、原签名校验后打开系统安装确认。GitHub Release 同时存档 APK。
 
 构建读取 `android/published-release.json` 的公开固定元数据，从本地已校验缓存或 GitHub Release 取同一 APK，验证后作为正式站静态资源发布。先发布 GitHub 资产，再普通快进推送 main；不提交生成 APK 或签名密钥。当前 APK 小于 1 MiB，静态资产构建上限为 25 MiB，不新增存储服务或付费产品，没有数据库迁移。
 
-0.6.0 及更早 CLI 必须先从 `/cli` 重跑安装命令一次，旧 App 先覆盖安装 0.6.1，此后才有更新入口。网页正常刷新。手机连接、GitHub Release、Git 同步和正式部署按后续核验分别记录，不能从本地构建成功推断发布或真机安装成功。
+0.6.0 及更早 CLI 必须先从 `/cli` 重跑安装命令一次，旧 App 先覆盖安装 0.6.1，此后才有更新入口。网页正常刷新。手机连接、GitHub Release、Git 同步和正式部署分别核验，不能从本地构建成功推断发布或真机安装成功。
 
 2026-09-30 本地已通过网页 20 项、云端 19 项、Windows 安装器 5 项、安装版 PowerShell / ConPTY 3 项、Linux x64 实际安装 / PTY 与两个平台分别执行的自更新集成检查；覆盖坏安装器拒绝、旧版保留、更新成功、已是最新、登录密文和公钥 pins 字节不变。Linux ARM64 仅验证归档哈希与 ELF 架构，没有 ARM64 执行。本轮 App 实际打包资源浏览器桥接流程 1 项、APK 结构 2 项、原签名及 Java 更新 URL / 元数据边界探针通过；这不等同真机安装确认流程测试。ADB 当前无设备。
 
-0.6.1-r1 APK 版本码 60101、230178 字节、SHA-256 `ee412eeccaf3d605c69f1ed7e40561aca667ada99de94a88f688d424d61be653`，沿用签名证书 `b8c332b8d7f2821ebe9d687aa82eaf309278e242ad2c2d6c2820b78c3f089c0e`。公开下载与正式站版本须发布后另行核对。没有使用真实聊天、凭据或宿主安装做测试。
+0.6.1-r1 APK 版本码 60101、230178 字节、SHA-256 `ee412eeccaf3d605c69f1ed7e40561aca667ada99de94a88f688d424d61be653`，沿用签名证书 `b8c332b8d7f2821ebe9d687aa82eaf309278e242ad2c2d6c2820b78c3f089c0e`。没有使用真实聊天、凭据或宿主安装做测试。
+
+2026-09-30，通过所有者已授权的浏览器发布 [GitHub Release v0.6.1](https://github.com/LeonZ03/Whisper/releases/tag/v0.6.1)，标签指向功能提交 `47aadad0c17b65ba0a7d6aa8b51d132015619bac`；公开 API 确认非草稿，APK 资产的大小和 SHA-256 与上述签名包相同。隔离空目录未使用本机 APK 或缓存，实际运行云端分发构建函数，从 GitHub 下载并通过固定校验。
+
+随后普通快进推送 main 到该功能提交并核对远端一致，自动 Cloudflare Build `343dc62c-dbc4-463f-b66e-b785406091e0` 成功；正式 HTTPS `/api/health` 返回 200、0.6.1 和相同完整提交号。本次没有手动部署、数据库迁移或付费产品变更。
+
+从正式域名直接下载更新清单与 [APK](https://whisper.leonz03.dpdns.org/downloads/whisper-android-0.6.1-r1.apk)，禁止重定向，核对完整文件长度及 SHA-256 均与 GitHub / 本地签名包相同。首页、聊天 JS / CSS、CLI 页、共用命令及两个安装脚本与本地构建校验和相同。手机更新请求不经过 GitHub；GitHub 仅用于公开存档及发布构建取包。
+
+正式 HTTPS 的 Windows x64、Linux x64、Linux ARM64 完整安装包均通过清单版本、文件长度、SHA-256、包内文件清单、更新器 / 入口 / 加密 / 实时模块源码及运行时校验；Linux x64 首次下载连接中断，重试通过。三包分别为 35703491 / 44682769 / 44381952 字节。下载核验不等于三个平台的真机运行；Linux ARM64 仍只有归档 / ELF 验证。发布时再次执行 ADB 设备检查，列表为空，0.6.1 尚未覆盖安装到所有者手机，Android 系统授权及更新安装的完整真机流程仍待验证。
 
 ### 0.6.0 实时通信与 Linux CLI：正式发布完成，手机待连接
 
