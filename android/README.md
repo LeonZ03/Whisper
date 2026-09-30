@@ -4,7 +4,13 @@
 
 ## 安装与使用
 
-在电脑运行 `npm.cmd run build:android` 后，安装文件在 `public/downloads/whisper-android-0.6.0-r1.apk`。将 APK 传到手机，点开并允许当前文件管理器安装该应用，可覆盖原有相同签名版本。要求 Android 8.0 或以上，且 Android System WebView / Chrome 已更新。登录、申请审批、改密、成员恢复、双人聊天、安全码和消息倒计时使用现有协议；阅后图片打开后最多显示三秒，随后先清除资源再播放空壳消散动画。
+0.6.1 新增“我的 → 应用版本 → 检查更新”，启动后也按六小时成功检查间隔提示新版本。更新清单为 `https://whisper.leonz03.dpdns.org/downloads/android-manifest.json`，APK 直接从同域 `/downloads/` 提供；手机不会重定向到 GitHub。GitHub Releases 同时存档同一份 APK。
+
+下载显示实际百分比并可取消。更新网络请求不附带聊天会话，大小与哈希通过后还核对包名、递增版本码、版本名与已安装应用签名；只将这个缓存 APK 通过只读 ContentProvider 交给系统。首次使用按系统提示允许 Whisper 安装更新，最终始终由用户确认。失败可重试，不卸载旧版本，不重建身份。此前 App 需要先覆盖安装 0.6.1 才有此入口。
+
+发布者用原签名构建 APK 后，将 `public/downloads/android-manifest.json` 的公开元数据固定到 `android/published-release.json`。先在 GitHub `v版本` Release 上传 APK，再推送 main；云端构建校验固定大小和 SHA-256 后将 APK 与清单部署为正式站静态资源。缺文件或哈希错误必须构建失败；APK、签名私钥、凭据不提交 Git。单个 APK 上限 25 MiB，超过时需另行设计分发，不自动开通付费存储。
+
+在电脑运行 `npm.cmd run build:android` 后，安装文件在 `public/downloads/whisper-android-0.6.1-r1.apk`。将 APK 传到手机，点开并允许当前文件管理器安装该应用，可覆盖原有相同签名版本。要求 Android 8.0 或以上，且 Android System WebView / Chrome 已更新。登录、申请审批、改密、成员恢复、双人聊天、安全码和消息倒计时使用现有协议；阅后图片打开后最多显示三秒，随后先清除资源再播放空壳消散动画。
 
 应用版本显示在登录、会话和“我的”页。APK 的界面、脚本、libsodium 与 W 图标随安装包分发，不从网页下载可执行代码。安装包升级需要使用相同应用 ID 和签名密钥；应用数据仍包含私有的公钥核对记录，禁止为修复升级而清空它。
 

@@ -37,6 +37,10 @@
 
 ## CLI distribution
 
+- Installed Windows/Linux clients support `whisper update` through the existing hash-checked platform installer, preserving install paths, private pins and protected login. Never update the host installation during tests; run `test:cli:update` on both platforms in isolated paths.
+- Android update checks and APK downloads use only the approved formal HTTPS origin, without session credentials or redirects to GitHub. Check bounded metadata, APK size/hash, package identity, increasing versionCode and the existing signing certificate before invoking Android's user-confirmed installer. Keep update file sharing confined to the single cache APK.
+- Publish the same signed APK on GitHub Releases. Pin public release metadata in `android/published-release.json`; cloud builds verify the archived APK before serving it under the formal domain. Release binaries/signing keys remain outside Git. Publish the release asset before the main push that depends on it; never silently omit a missing APK or change the signing identity.
+
 - Command installation is the supported visitor path; keep CLI.md as the single usage guide.
 - Never include host data or credentials in the client release. Retain the ZIP as an installation payload, not a project backup.
 - Generate launcher and web install commands from public/cli-command.mjs.

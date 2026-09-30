@@ -1,6 +1,6 @@
 {
   "name": "whisper-local",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "private": true,
   "type": "module",
   "engines": {
@@ -14,7 +14,7 @@
     "test:android:package": "node --test tests/android-package.test.mjs",
     "start": "node --no-warnings scripts/launch.mjs",
     "start:local": "node --no-warnings scripts/launch.mjs --local-only",
-    "test": "node --test tests/crypto.test.mjs tests/server.test.mjs tests/account.test.mjs tests/account-flow.test.mjs tests/cli.test.mjs tests/cli-history.test.mjs tests/cli-color.test.mjs tests/cli-interaction.test.mjs tests/cli-account-ui.test.mjs tests/login-store.test.mjs tests/linux-keyring.test.mjs tests/realtime-client.test.mjs tests/realtime-cli.test.mjs tests/cli-command-linux.test.mjs",
+    "test": "node --test tests/crypto.test.mjs tests/server.test.mjs tests/account.test.mjs tests/account-flow.test.mjs tests/cli.test.mjs tests/cli-history.test.mjs tests/cli-color.test.mjs tests/cli-interaction.test.mjs tests/cli-account-ui.test.mjs tests/login-store.test.mjs tests/linux-keyring.test.mjs tests/realtime-client.test.mjs tests/realtime-cli.test.mjs tests/cli-command-linux.test.mjs tests/cli-update.test.mjs tests/android-release.test.mjs",
     "test:e2e": "playwright test",
     "cli": "node --no-warnings cli/index.mjs",
     "test:cli": "node --test tests/cli.test.mjs tests/cli-history.test.mjs tests/cli-color.test.mjs tests/cli-interaction.test.mjs tests/cli-account-ui.test.mjs tests/login-store.test.mjs tests/linux-keyring.test.mjs",
@@ -33,7 +33,8 @@
     "test:cli:linux:tty": "node --test --test-force-exit tests/cli-linux-tty.test.mjs",
     "test:realtime": "node --test tests/realtime-client.test.mjs tests/realtime-cli.test.mjs tests/realtime-backend.test.mjs tests/realtime-cleanup.test.mjs tests/realtime-rate-limit.test.mjs",
     "test:cli:linux:install": "node --test tests/cli-linux-install.test.mjs",
-    "test:cli:linux:package": "node scripts/test-cli-linux-package.mjs"
+    "test:cli:linux:package": "node scripts/test-cli-linux-package.mjs",
+    "test:cli:update": "node --test tests/cli-update-install.test.mjs"
   },
   "dependencies": {
     "express": "5.2.1",

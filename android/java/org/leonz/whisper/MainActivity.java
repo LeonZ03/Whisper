@@ -39,6 +39,7 @@ public final class MainActivity extends Activity {
     private WebView web;
     private CloudTransport transport;
     private SessionVault vault;
+    private AppUpdater updater;
     private final ExecutorService requests = Executors.newFixedThreadPool(3);
     private final AtomicInteger sessionEpoch = new AtomicInteger();
     private ValueCallback<Uri[]> fileCallback;
@@ -65,6 +66,7 @@ public final class MainActivity extends Activity {
         }
         getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
         vault = new SessionVault(this);
+        updater = new AppUpdater(this);
         transport = new CloudTransport(Build.MANUFACTURER + " " + Build.MODEL + " / Android " + Build.VERSION.RELEASE);
         web = new WebView(this);
         web.setBackgroundColor(Color.rgb(250, 252, 251));
@@ -159,6 +161,7 @@ public final class MainActivity extends Activity {
     @Override protected void onResume() { super.onResume(); foreground = true; if (web != null) js("globalThis.whisperAndroidResume?.()"); }
     @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == 72 && updater != null) { updater.installPending(); return; }
         if (requestCode == IMAGE_PICKER && fileCallback != null) {
             ValueCallback<Uri[]> callback = fileCallback; fileCallback = null;
             Uri uri = resultCode == RESULT_OK && data != null ? data.getData() : null;
@@ -169,11 +172,13 @@ public final class MainActivity extends Activity {
     @Override protected void onDestroy() {
         if (connectivity != null && networkCallback != null) connectivity.unregisterNetworkCallback(networkCallback);
         destroyed = true; sessionEpoch.incrementAndGet(); transport.clearSession(); requests.shutdownNow();
+        if (updater != null) updater.destroy();
         if (fileCallback != null) { fileCallback.onReceiveValue(null); fileCallback = null; }
         web.removeJavascriptInterface("WhisperNative"); web.clearCache(true); web.clearHistory(); web.destroy(); web = null;
         super.onDestroy();
     }
     public final class NativeBridge {
+        @JavascriptInterface public void checkUpdate(boolean manual) { runOnUiThread(() -> { if (!destroyed) updater.check(manual); }); }
         @JavascriptInterface public void request(String id, String path, String method, String body) {
             if (id == null || !id.matches("[0-9]{1,10}") || destroyed) return;
             final int epoch = sessionEpoch.get();

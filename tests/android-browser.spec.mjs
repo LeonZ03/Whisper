@@ -54,6 +54,7 @@ async function client(browser) {
       if (auth && !auth.hidden) globalThis.authScreenSeen = true;
     }).observe(document, { childList: true, subtree: true, attributes: true, attributeFilter: ['hidden'] });
     globalThis.WhisperNative = {
+      checkUpdate: manual => { globalThis.updateCheckManual = manual; },
       request: (id, path, method, body) => { void globalThis.androidRequest(id, path, method, body); },
       saveLogin: identity => globalThis.androidSave(identity), restoreLogin: () => globalThis.androidRestore(),
       clearSession: () => { void globalThis.androidClear(); }, exit: () => { globalThis.androidExited = true; }
@@ -96,6 +97,8 @@ test('Android packaged UI: durable login, devices, encrypted chat, 3-second imag
     await expect(a.page.locator('#nav-my')).toBeVisible();
     await a.page.locator('#nav-my').click(); await expect(a.page.locator('#my-name')).toHaveText('android_alice');
     await expect(a.page.locator('#my-panel [data-app-version]')).toHaveText(`v${version}`);
+    await a.page.locator('#app-update').click();
+    expect(await a.page.evaluate(() => globalThis.updateCheckManual)).toBe(true);
     await expect(a.page.locator('#account-sessions')).toContainText('OPPO test');
     await expect(a.page.locator('#account-sessions')).toContainText('本机');
     await expect(a.page.locator('#account-sessions')).not.toContainText('Android App');

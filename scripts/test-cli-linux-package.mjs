@@ -17,6 +17,7 @@ try {
     const node=execFileSync('tar',['-xOzf',resolve('public/downloads/'+manifest.filename),'Whisper-CLI/runtime/node'],{maxBuffer:256*1024*1024});
     assert.equal(node.subarray(0,4).toString('hex'),'7f454c46');assert.equal(node.readUInt16LE(18),arch==='x64'?62:183);
     const inventory=JSON.parse(execFileSync('tar',['-xOzf',resolve('public/downloads/'+manifest.filename),'Whisper-CLI/FILES-SHA256.json'],{maxBuffer:2*1024*1024}));
+    assert.ok(inventory['cli/update.mjs'],'Linux package must contain its self-updater.');
     assert.equal(sha(node),inventory['runtime/node']);assert.ok(inventory['src/realtime-client.mjs']);
     assert.equal(Object.keys(inventory).some(n=>/^(data|server|cloud|tests)\//.test(n)),false);
     files.set('/downloads/manifest-linux-'+arch+'.json',Buffer.from(JSON.stringify(manifest,null,2)));

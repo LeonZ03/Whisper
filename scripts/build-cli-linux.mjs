@@ -63,7 +63,7 @@ async function getRuntime(runtime) {
 }
 
 try {
-  const commonFiles = ['application.mjs', 'client.mjs', 'index.mjs', 'terminal.mjs', 'theme.mjs', 'transcript.mjs', 'account-ui.mjs', 'login-store.mjs', 'linux-keyring.mjs'];
+  const commonFiles = ['application.mjs', 'client.mjs', 'index.mjs', 'terminal.mjs', 'theme.mjs', 'transcript.mjs', 'account-ui.mjs', 'login-store.mjs', 'linux-keyring.mjs', 'update.mjs'];
   for (const target of targets) {
     dependencies.clear();
     const runtime = metadata.runtimes[target.arch];

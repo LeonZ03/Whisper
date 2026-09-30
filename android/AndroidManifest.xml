@@ -3,10 +3,13 @@
   <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="35" />
   <uses-permission android:name="android.permission.INTERNET" />
   <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+  <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
   <application android:label="Whisper" android:icon="@drawable/app_icon"
     android:theme="@style/AppTheme" android:allowBackup="false"
     android:fullBackupContent="false" android:dataExtractionRules="@xml/data_extraction_rules"
     android:usesCleartextTraffic="false" android:debuggable="false">
+    <provider android:name=".UpdateProvider" android:authorities="org.leonz.whisper.updates"
+      android:exported="false" android:grantUriPermissions="true" />
     <activity android:name=".MainActivity" android:exported="true"
       android:configChanges="keyboard|keyboardHidden|orientation|screenSize|uiMode"
       android:windowSoftInputMode="adjustResize">

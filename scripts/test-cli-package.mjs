@@ -17,6 +17,7 @@ try {
   const client = join(work, 'Whisper-CLI');
   assert.deepEqual(readdirSync(client).sort(), ['BUILD-INFO.json', 'FILES-SHA256.json', 'README.txt', 'cli', 'node_modules', 'package.json', 'runtime', 'src', 'whisper.cmd', 'uninstall.ps1'].sort());
   const expected = JSON.parse(readFileSync(join(client, 'FILES-SHA256.json')));
+  assert.ok(expected['cli/update.mjs'], 'Portable package must contain its self-updater.');
   const actual = [];
   function walk(directory, prefix = '') {
     for (const name of readdirSync(directory)) {

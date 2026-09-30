@@ -2,6 +2,16 @@ import { createInterface } from 'node:readline/promises';
 import { normalizeServer } from './client.mjs';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { safeText } from './theme.mjs';
+if (process.argv.length === 3 && process.argv[2] === 'update') {
+  try {
+    const { runUpdate } = await import('./update.mjs');
+    await runUpdate();
+  } catch (error) {
+    console.error(safeText(error?.message || 'Whisper CLI update failed.').replace(/[\r\n]+/g, ' '));
+    process.exitCode = 1;
+  }
+} else {
 const needsServer = process.argv.slice(2).every((arg) => ['--color', '--no-color'].includes(arg));
 
 if (needsServer && !process.env.WHISPER_SERVER && process.env.WHISPER_CLI_HOME) {
@@ -31,3 +41,4 @@ if (!process.exitCode && needsServer && !process.env.WHISPER_SERVER) {
   }
 }
 if (!process.exitCode) await import('./index.mjs');
+}

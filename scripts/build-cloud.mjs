@@ -6,6 +6,7 @@ import { createHash } from 'node:crypto';
 import { build } from 'esbuild';
 import { zipSync, unzipSync, strToU8 } from 'fflate';
 import { SECURITY_HEADERS } from '../cloud/security.mjs';
+import { stageAndroidRelease } from './android-release.mjs';
 const root=fileURLToPath(new URL('../',import.meta.url)),out=join(root,'.cloud'),assets=join(out,'public');
 const sha=b=>createHash('sha256').update(b).digest('hex');
 const pkg=JSON.parse(readFileSync(join(root,'package.json')));
@@ -33,7 +34,7 @@ function dependency(name,destination=files,seen=dependencies) {
   seen.set(name,data.version);copy(p,'node_modules/'+name,destination);
   for(const child of Object.keys(data.dependencies||{}))dependency(child,destination,seen);
 }
-for(const n of ['application.mjs','client.mjs','index.mjs','terminal.mjs','theme.mjs','transcript.mjs', 'account-ui.mjs', 'login-store.mjs', 'linux-keyring.mjs'])copy(join(root,'cli',n),'cli/'+n);
+for(const n of ['application.mjs','client.mjs','index.mjs','terminal.mjs','theme.mjs','transcript.mjs', 'account-ui.mjs', 'login-store.mjs', 'linux-keyring.mjs','update.mjs'])copy(join(root,'cli',n),'cli/'+n);
 copy(join(root,'src/crypto.mjs'),'src/crypto.mjs');
 copy(join(root,'src/account-client.mjs'),'src/account-client.mjs');
 copy(join(root,'src/realtime-client.mjs'),'src/realtime-client.mjs');
@@ -88,7 +89,7 @@ for(const arch of ['x64','arm64']) {
   const license=execFileSync('tar',['-xOzf',cache,prefix+'LICENSE'],{maxBuffer:2*1024*1024});
   if(node.length<1_000_000||!license.toString('utf8').includes('Permission is hereby granted'))throw Error('Official Linux runtime archive incomplete');
   const linuxFiles={},linuxDeps=new Map();
-  for(const n of ['application.mjs','client.mjs','index.mjs','terminal.mjs','theme.mjs','transcript.mjs','account-ui.mjs','login-store.mjs','linux-keyring.mjs'])copy(join(root,'cli',n),'cli/'+n,linuxFiles);
+  for(const n of ['application.mjs','client.mjs','index.mjs','terminal.mjs','theme.mjs','transcript.mjs','account-ui.mjs','login-store.mjs','linux-keyring.mjs','update.mjs'])copy(join(root,'cli',n),'cli/'+n,linuxFiles);
   copy(join(root,'src/crypto.mjs'),'src/crypto.mjs',linuxFiles);copy(join(root,'src/account-client.mjs'),'src/account-client.mjs',linuxFiles);
   copy(join(root,'src/realtime-client.mjs'),'src/realtime-client.mjs',linuxFiles);
   copy(join(root,'client-distribution/remote-entry.mjs'),'cli/remote-entry.mjs',linuxFiles);
@@ -107,6 +108,7 @@ for(const arch of ['x64','arm64']) {
   const linuxManifest={version:pkg.version,platform,node:linuxRuntime.version,glibcMinimum:linuxRuntime.glibcMinimum,kernelMinimum:linuxRuntime.kernelMinimum,filename,bytes:archive.length,sha256:sha(archive),installerSha256:sha(linuxInstaller),fileCount:Object.keys(linuxFiles).length,chunks:linuxChunks};
   writeFileSync(join(assets,'downloads/manifest-'+platform+'.json'),JSON.stringify(linuxManifest,null,2)+'\n');
 }
+await stageAndroidRelease(root, assets);
 await build({absWorkingDir:root,entryPoints:['cloud/worker.mjs'],outfile:join(out,'worker.mjs'),bundle:true,
   platform:'browser',format:'esm',target:['es2022'],sourcemap:false,
   define:{__APP_VERSION__:JSON.stringify(pkg.version),__COMMIT__:JSON.stringify(commit)}});

@@ -1,6 +1,12 @@
 # Whisper CLI：安装与聊天
 
-当前源码版本为 0.6.0；已安装版本以 `whisper --version` 为准。正式服务与发布包状态见 [部署手册](cloud/DEPLOYMENT.md)，更新命令以当前安装页为准。
+当前源码版本为 0.6.1；已安装版本以 `whisper --version` 为准。正式服务与发布包状态见 [部署手册](cloud/DEPLOYMENT.md)。
+
+## 后续更新
+
+退出 CLI 后，在 Windows PowerShell 或 Linux 终端运行 `whisper update`。它检查安装时保存的服务，校验安装脚本后复用现有安装器，显示下载进度及 `Update successful!`；已经最新则显示 `Already up to date`。不改变安装目录 / PATH，不清除账号、身份、公钥核对记录或受保护的登录文件。网络 / 校验失败不会启用损坏文件。更新成功后输入 `whisper` 即可。
+
+此命令从 0.6.1 开始提供；0.6.0 及更早客户端先用 [安装页](https://whisper.leonz03.dpdns.org/cli) 的原安装命令升级一次。手动解压的非托管安装不使用自更新。更新不需要在命令中输入密码或指定服务器地址，也不会登录账号。
 
 ## 服务提供者
 

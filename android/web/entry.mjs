@@ -25,3 +25,5 @@ globalThis.whisperAndroidRestoreLogin = async () => {
   const value = await globalThis.WhisperNative.restoreLogin(); return value ? JSON.parse(value) : null;
 };
 await import('../../src/app.mjs');
+document.querySelector('#app-update')?.addEventListener('click', () => globalThis.WhisperNative.checkUpdate?.(true));
+setTimeout(() => globalThis.WhisperNative.checkUpdate?.(false), 5000);
