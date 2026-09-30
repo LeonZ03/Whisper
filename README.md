@@ -9,7 +9,9 @@
 
 Windows / Linux 已安装 0.6.1 后，退出 CLI，在终端执行 `whisper update`，再用 `whisper` 聊天；更新有进度与英文成功提示，保留公钥核对记录和受保护登录。更早版本先从 [CLI 安装页](https://whisper.leonz03.dpdns.org/cli) 重新安装一次。
 
-Android 0.6.1 启动后低频检查更新，也可点“我的 → 应用版本”检查、下载并打开系统确认安装。版本清单和 APK 都从正式站下载，手机不依赖访问 GitHub；[GitHub Releases](https://github.com/LeonZ03/Whisper/releases) 同时提供同一签名 APK。旧 App 首次需覆盖安装 0.6.1，禁止先卸载或清空应用数据。SHA-256、包名、递增版本码和原签名都核对后才进入安装流程。仍使用同一身份和加密协议，本版本没有新增数据库迁移。
+Android 可从登录页、网页左下角或手机网页“我的”进入 [APK 下载页](https://whisper.leonz03.dpdns.org/apk)，浏览界面示意后点击“下载 APK”。下载完成后打开文件，按系统提示允许当前浏览器安装；已有版本直接覆盖，保留账号与应用数据。
+
+Android 0.6.1 启动后低频检查更新，也可点“我的 → 应用版本”检查、下载并打开系统确认安装。版本清单和 APK 都从正式站下载，手机不依赖访问 GitHub；[GitHub Releases](https://github.com/LeonZ03/Whisper/releases) 同时提供同一签名 APK。旧 App 首次需覆盖安装 0.6.1，禁止先卸载或清空应用数据。App 内更新会核对 SHA-256、包名、递增版本码和原签名后才进入安装流程。仍使用同一身份和加密协议，本版本没有新增数据库迁移。
 
 **这是未经安全审计的个人原型，不承诺完全匿名、前向保密、防截图或远程彻底擦除。请先使用非敏感内容。**
 
