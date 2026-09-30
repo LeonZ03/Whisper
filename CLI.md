@@ -29,13 +29,11 @@ Windows 命令会下载脚本、核对脚本 SHA-256，在独立 PowerShell 进�
 0.6.0 使用实时通知和游标增量同步；正常连接不再两秒拉取会话和最近 200 条消息。断线自动退避重连并补拉，旧消息翻阅、草稿、绝对到期时间和公钥核对不变。Windows / Linux 更新都使用安装页对应平台的同一条安装命令；保留已有登录保护和身份，不要删除 data 或重新注册。Linux ARM64 与 x64 发布包分别校验，实际运行平台见部署记录。
 
 ```powershell
-whisper --server https://服务提供者给出的当前地址
-# 沿用安装时保存的服务器：
 whisper
 # 卸载客户端，默认保留公钥核对记录：
 whisper --uninstall
 ```
-将示例网址换成真实网址。临时地址变化只需使用新的 `--server`，不用重新安装。
+安装成功后，在终端输入 `whisper` 即可开始聊天。
 更新客户端时重新执行最新安装命令；重复安装会检查现有文件，不覆盖公钥核对记录。
 CLI 顶栏常驻显示已安装客户端的版本，也可运行 `whisper --version` 查看；安装页显示的是当前可安装的版本。
 安装命令在其执行的当前窗口刷新 PATH。其他已打开的终端可重新打开，或用完整路径 `%LOCALAPPDATA%\WhisperCLI\bin\whisper.cmd` 启动。
@@ -208,6 +206,6 @@ https://learn.chatgpt.com/docs/developer-commands?surface=cli
 ## 正式云端入口
 
 安装／更新：https://whisper.leonz03.dpdns.org/cli 。
-连接命令：`whisper --server https://whisper.leonz03.dpdns.org`。
+连接命令：`whisper`。
 云端账号申请和审批独立于本机；两边不会同步账号、密钥或消息。
 GitHub 推送更新云端服务与可下载客户端，不会静默替换已经安装的 CLI。

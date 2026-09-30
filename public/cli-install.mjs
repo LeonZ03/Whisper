@@ -12,7 +12,6 @@ const setPlatform = (next) => {
   void render();
 };
 for (const button of buttons) button.addEventListener('click', () => setPlatform(button.dataset.platform));
-$('connect').textContent = `whisper --server '${location.origin}'`;
 
 async function render() {
   const id = ++renderId;
