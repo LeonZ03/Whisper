@@ -114,7 +114,10 @@ test('CLI actual API: E2EE, deletion, expiry, unread images, pinning and account
     await a.sync(); assert.equal(a.viewMessages().length, 0);
     a.messages = [{ ...last, expiresAt: Date.now() - 1 }]; assert.equal(a.viewMessages().length, 0);
     const pins = readFileSync(join(dir, 'alice-pins.json'), 'utf8'); assert.equal(pins.includes(text), false); assert.equal(pins.includes(password), false);
+    const queuedBeforeIdentityChange = a.prepareSend('身份变化后不能上传的队列消息');
     app.db.prepare('UPDATE users SET public_key=? WHERE id=?').run(c.user.publicKey, b.user.id);
+    await assert.rejects(a.sendPrepared(queuedBeforeIdentityChange.envelope, queuedBeforeIdentityChange.context), error => error.name === 'AbortError');
+    assert.equal(app.db.prepare('SELECT COUNT(*) AS n FROM messages WHERE id=?').get(queuedBeforeIdentityChange.envelope.id).n, 0);
     await a.sync(); assert.equal(a.trust().blocked, true); assert.equal(a.viewMessages().length, 0);
     await assert.rejects(a.send('必须被阻止'), /公钥变化/);
     const secret = a.user.secretKey; await a.logout(); assert.ok(secret.every((n) => n === 0)); assert.equal(a.cookie, '');

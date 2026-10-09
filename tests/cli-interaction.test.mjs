@@ -104,40 +104,57 @@ test('pending send displays own message after client safety callback, keeps draf
   const f = fixture(), { app, client, ui, type } = f;
   let upload, metadata, sends = 0;
   client.messages = Array.from({ length: 24 }, (_, i) => ({ id: 'old' + i, seq: i + 1, own: false, text: '历史行 ' + i, createdAt: Date.now(), expiresAt: Date.now() + 60000 }));
-  client.send = async (text, { onPending }) => {
-    sends++; metadata = { id: 'pending-own', expiresAt: Date.now() + 60000 };
-    onPending(metadata); await new Promise((resolve) => { upload = resolve; });
+  client.prepareSend = () => {
+    metadata = { id: 'pending-own', expiresAt: Date.now() + 60000 };
+    return { envelope: metadata, context: { user: client.user } };
+  };
+  client.sendPrepared = async () => {
+    sends++; await new Promise((resolve) => { upload = resolve; });
     return metadata.id;
   };
   client.sync = async () => { client.messages = [...client.messages, { ...metadata, seq: 25, own: true, createdAt: Date.now(), text: '待发送的正文' }]; };
   try {
     app.render(); ui.scrollBy(16); const anchor = { ...ui.anchor }; type('保留未提交的草稿');
-    const operation = app.execute('待发送的正文');
-    assert.ok(f.screen().includes('发送中'));
+    await app.execute('待发送的正文');
+    assert.equal(app.sendPreview.status, '发送中…');
     assert.ok(ui.state.body.includes('  待发送的正文'));
     assert.equal(app.sendPreview.id, 'pending-own');
     assert.deepEqual(ui.anchor, anchor); assert.equal(ui.buffer, '保留未提交的草稿');
     assert.equal(ui.commandHistory.length, 0); assert.equal(app.transcript.entries.length, 0);
-    upload(); await operation;
+    assert.equal(ui.busy, false); type(' · 下一段');
+    upload(); await app.waitForSends();
     assert.equal(sends, 1); assert.equal(app.sendPreview, null);
     assert.equal(ui.state.body.filter((line) => line === '  待发送的正文').length, 1);
-    assert.equal(ui.buffer, '保留未提交的草稿'); assert.deepEqual(ui.anchor, anchor);
+    assert.equal(ui.buffer, '保留未提交的草稿 · 下一段'); assert.deepEqual(ui.anchor, anchor);
+  } finally { f.close(); }
+});
+test('multiple submitted messages upload in order while the next draft stays editable', async () => {
+  const f = fixture(), { app, client, ui, type } = f; let counter = 0; const releases = [], sent = [];
+  client.prepareSend = text => ({ envelope: { id: String(++counter), ciphertext: 'encrypted-' + counter, expiresAt: Date.now() + 60000 }, context: { user: client.user } });
+  client.sendPrepared = async envelope => { sent.push(envelope.id); await new Promise(resolve => releases.push(resolve)); };
+  try {
+    await app.execute('第一段'); await app.execute('第二段'); type('继续写第三段');
+    assert.equal(ui.busy, false); assert.equal(app.sendPreviews.size, 2); assert.equal(ui.buffer, '继续写第三段'); assert.deepEqual(sent, ['1']);
+    releases[0](); await new Promise(resolve => setImmediate(resolve)); assert.deepEqual(sent, ['1', '2']);
+    releases[1](); await app.waitForSends(); assert.equal(ui.buffer, '继续写第三段');
+    assert.equal(ui.commandHistory.length, 0); assert.equal(app.transcript.entries.length, 0);
   } finally { f.close(); }
 });
 test('failed or unknown send clears preview and never retries, including expiry while upload waits', async (t) => {
   let now = 1800000000000; t.mock.method(Date, 'now', () => now);
   const f = fixture(), { app, client, ui } = f; let reject, sends = 0;
-  client.send = async (text, { onPending }) => {
-    sends++; onPending({ id: 'uncertain', expiresAt: now + 1000 });
+  client.prepareSend = () => ({ envelope: { id: 'uncertain', expiresAt: now + 1000 }, context: { user: client.user } });
+  client.sendPrepared = async () => {
+    sends++;
     await new Promise((resolve, fail) => { reject = fail; });
   };
   try {
-    const operation = app.execute('不应保留的失败正文');
+    await app.execute('不应保留的失败正文');
     assert.ok(ui.state.body.includes('  不应保留的失败正文'));
     now += 1000; ui.render();
     assert.equal(app.sendPreview, null); assert.ok(!ui.state.body.join('\n').includes('不应保留的失败正文'));
     assert.ok(!JSON.stringify(ui.wrapped?.rows).includes('不应保留的失败正文'));
-    reject(new Error('发送结果未知：请先 /refresh 核对，勿立即重发以免重复。')); await operation;
+    reject(new Error('发送结果未知：请先 /refresh 核对，勿立即重发以免重复。')); await app.waitForSends();
     assert.equal(sends, 1); assert.ok(app.notice.includes('发送结果未知'));
     assert.ok(!ui.state.body.join('\n').includes('不应保留的失败正文'));
   } finally { f.close(); }

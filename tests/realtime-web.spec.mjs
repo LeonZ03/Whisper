@@ -7,7 +7,7 @@ import { join } from 'node:path';
 const cryptoStub = `export const ready=Promise.resolve();
 export const b64=()=>'',unb64=()=>new Uint8Array(32),wipe=()=>{},randomSalt=()=>'';
 export const deriveCredentials=async()=>({}),createIdentity=()=>({}),unlockIdentity=()=>new Uint8Array(32),rewrapIdentity=()=>({});
-export const encryptMessage=()=>({}),decryptMessage=m=>({body:m.ciphertext}),safetyCode=async()=>'';`;
+export const encryptMessage=(user,peer,conversationId,text)=>({id:'send-'+(globalThis.fixtureSendId=(globalThis.fixtureSendId||0)+1),conversationId,senderId:user.id,type:'text',ciphertext:text,nonce:'fixture',createdAt:Date.now(),expiresAt:Date.now()+60000}),decryptMessage=m=>({body:m.ciphertext}),safetyCode=async()=>'';`;
 const user = { id: 'fixture-user', username: 'alice', publicKey: 'alice-key', role: 'member', mustChangePassword: false };
 const conversation = { id: '11111111-1111-4111-8111-111111111111', updatedAt: 1, peer: { id: 'fixture-peer', username: 'bobby', publicKey: 'peer-key' } };
 const other = { id: '22222222-2222-4222-8222-222222222222', updatedAt: 2, peer: { id: 'fixture-other', username: 'carol', publicKey: 'other-key' } };
@@ -16,8 +16,8 @@ const response = (extra = {}) => ({ version: 1, cursor: 10, reset: false, more: 
   conversations: [], removedConversations: [], messages: [], removed: [], serverTime: Date.now(), ...extra });
 
 async function fixture(page) {
-  const requests = [], queued = [];
-  let snapshot = [], gate = null;
+  const requests = [], queued = [], uploads = [];
+  let snapshot = [], gate = null, sendGate = null;
   await page.addInitScript(() => {
     globalThis.fixtureSockets = [];
     globalThis.WebSocket = class extends EventTarget {
@@ -31,6 +31,12 @@ async function fixture(page) {
       requests.push(path + url.search);
       let value, status = 200;
       if (path === '/api/health') value = { capabilities: ['realtime-sync-v1'], environment: 'local' };
+      else if (route.request().method() === 'POST' && path.endsWith('/messages')) {
+        const sent = route.request().postDataJSON(); uploads.push(sent);
+        if (sendGate) { const current = sendGate; sendGate = null; await current.promise; status = current.status; }
+        value = status === 200 ? {} : { error: '隔离测试发送拒绝' };
+        if (status === 200) snapshot.push({ ...sent, seq: uploads.length });
+      }
       else if (path === '/api/realtime/ticket') value = { ticket: 'T'.repeat(43), expiresAt: Date.now() + 60_000 };
       else if (path === '/api/sync') {
         if (gate) { const current = gate; gate = null; await current.promise; value = current.result; status = current.status; }
@@ -57,9 +63,44 @@ loadEarlier:items=>{messages=[...items,...messages];renderMessages()}};`;
   await page.goto('https://realtime.test/');
   await expect.poll(() => page.evaluate(() => Boolean(globalThis.realtimeTest))).toBe(true);
   await page.evaluate(async user => { await realtimeTest.enterUser(user, new Uint8Array(32)); await realtimeTest.sync(); realtimeTest.stopRealtime(); }, user);
-  return { requests, queued, snapshot: value => { snapshot = value; },
+  return { requests, queued, uploads, snapshot: value => { snapshot = value; },
+    holdSend: (status = 200) => { let release; sendGate = { status, promise: new Promise(resolve => { release = resolve; }) }; return release; },
     hold: (result, status = 200) => { let release; gate = { result, status, promise: new Promise(resolve => { release = resolve; }) }; return release; } };
 }
+
+test('submit clears the composer immediately; queued uploads are ordered and do not overwrite the next draft', async ({ page }) => {
+  const f = await fixture(page); await page.evaluate(c => realtimeTest.selectConversation(c), conversation);
+  const release = f.holdSend();
+  await page.locator('#message-input').fill('第一段'); await page.locator('#send').click(); await expect(page.locator('#message-input')).toHaveValue('');
+  await expect.poll(() => f.uploads.length).toBe(1);
+  await page.locator('#message-input').fill('第二段'); await page.locator('#send').click(); await expect(page.locator('#message-input')).toHaveValue('');
+  await page.locator('#message-input').fill('第三段草稿'); await expect(page.locator('#send')).toBeEnabled();
+  expect(f.uploads.length).toBe(1); await expect(page.locator('.sending-preview')).toHaveCount(2);
+  release(); await expect.poll(() => f.uploads.length).toBe(2);
+  expect(f.uploads.map(m => m.ciphertext)).toEqual(['第一段','第二段']);
+  await expect(page.locator('.sending-preview')).toHaveCount(0); await expect(page.locator('#message-input')).toHaveValue('第三段草稿');
+  const remove = page.locator('[data-message-id="send-1"] .message-delete');
+  await expect(remove).toHaveAccessibleName('双方删除'); await expect(remove.locator('svg')).toHaveCount(1); expect(await remove.innerText()).toBe('');
+});
+
+test('failed send keeps a recovery entry without replacing a newer draft or stopping later messages', async ({ page }) => {
+  const f = await fixture(page); await page.evaluate(c => realtimeTest.selectConversation(c), conversation);
+  const release = f.holdSend(429); await page.locator('#message-input').fill('失败的第一段'); await page.locator('#send').click();
+  await expect.poll(() => f.uploads.length).toBe(1); await page.locator('#message-input').fill('第二段'); await page.locator('#send').click();
+  await page.locator('#message-input').fill('当前草稿'); release(); await expect.poll(() => f.uploads.length).toBe(2);
+  await expect(page.locator('.send-failed')).toContainText('失败的第一段'); await expect(page.locator('#message-input')).toHaveValue('当前草稿');
+  await page.locator('#message-input').fill(''); await page.getByRole('button',{name:'放回输入框',exact:true}).click();
+  await expect(page.locator('#message-input')).toHaveValue('失败的第一段'); expect(f.uploads.length).toBe(2);
+});
+
+test('switching conversations cancels unsent queue entries and ignores a late upload result', async ({ page }) => {
+  const f = await fixture(page); await page.evaluate(c => realtimeTest.selectConversation(c), conversation);
+  const release = f.holdSend(); await page.locator('#message-input').fill('旧会话第一段'); await page.locator('#send').click();
+  await expect.poll(() => f.uploads.length).toBe(1); await page.locator('#message-input').fill('旧会话排队消息'); await page.locator('#send').click();
+  await page.evaluate(c => realtimeTest.selectConversation(c), other); await page.locator('#message-input').fill('新会话草稿');
+  release(); await page.waitForTimeout(100);
+  expect(f.uploads.length).toBe(1); await expect(page.locator('.sending-preview')).toHaveCount(0); await expect(page.locator('#message-input')).toHaveValue('新会话草稿');
+});
 
 test('incremental removals reach loaded old pages; unchanged cards retain focus, draft and absolute expiry', async ({ page }) => {
   const f = await fixture(page); f.snapshot([envelope('recent', 201), envelope('image', 202, 'image')]);

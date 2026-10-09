@@ -52,7 +52,8 @@ test('expiry scrubs content before the short empty-shell animation, then removes
   await page.clock.fastForward(5001);
   expect(await page.evaluate(() => window.erased)).toEqual([{ id: 'secret', text: '', inert: true }]);
   expect(await page.locator('#messages').innerText()).not.toContain('测试内容 secret');
-  await page.clock.runFor(400); await expect(page.locator('.message')).toHaveCount(0);
+  const dust = await page.locator('.dissolve-particle').count(); expect(dust).toBeGreaterThanOrEqual(24); expect(dust).toBeLessThanOrEqual(96);
+  await page.clock.runFor(600); await expect(page.locator('.message')).toHaveCount(0);
   await expect(page.locator('.messages-empty')).toBeVisible();
 });
 
@@ -62,7 +63,7 @@ test('view-once image dissolve clears its source before animation and can be can
     const image = document.createElement('img'); image.src = 'data:image/png;base64,AA==';
     document.body.append(image); let completed = 0;
     const cancel = dissolveViewOnceImage(image, { onComplete: () => completed++ });
-    const scrubbed = image.hidden && !image.hasAttribute('src') && !image.hasAttribute('srcset') && document.querySelector('.image-dissolve-shell')?.querySelectorAll('.dissolve-particle').length === 3;
+    const scrubbed = image.hidden && !image.hasAttribute('src') && !image.hasAttribute('srcset') && document.querySelector('.image-dissolve-shell')?.querySelectorAll('.dissolve-particle').length >= 24;
     cancel();
     return { scrubbed, completed, shellCount: document.querySelectorAll('.image-dissolve-shell').length, imageVisible: !image.hidden };
   });

@@ -16,7 +16,7 @@ test.afterAll(async () => { await app?.close(); if (dir) rmSync(dir, { recursive
 // isolated real API. The OS window flag is checked separately in the APK build.
 async function client(browser) {
   const context = await browser.newContext({ viewport: { width: 393, height: 800 } });
-  let cookie = '', requests = [], clears = 0, savedLogin = null, offline = false, restoreGate = null;
+  let cookie = '', requests = [], clears = 0, savedLogin = null, offline = false, restoreGate = null, sendGate = null;
   const realtimeSockets = new Set(), realtimeFailures = [];
   // Keep the packaged client's fixed WSS endpoint and exact CSP. Playwright
   // routes that endpoint to an isolated real WebSocket handshake; no production
@@ -34,6 +34,7 @@ async function client(browser) {
   });
   await context.exposeBinding('androidRequest', async ({ page }, id, path, method, body) => {
     requests.push({ path, method, body });
+    if (method === 'POST' && path.endsWith('/messages') && sendGate) { const waiting = sendGate; sendGate = null; await waiting; }
     if (path === '/api/account/me' && restoreGate) await restoreGate;
     if (offline) { await page.evaluate(id => globalThis.whisperAndroidResponse(id, 0, ''), id); return; }
     const response = await fetch(app.localUrl + path, { method, headers: { Origin: app.localUrl, Cookie: cookie,
@@ -73,6 +74,7 @@ async function client(browser) {
   const errors = []; page.on('pageerror', error => errors.push(error.message));
   await page.goto('https://appassets.androidplatform.net/index.html'); await expect(page.locator('#auth-submit')).toBeEnabled();
   return { context, page, errors, requests, realtimeFailures, realtimeSockets, getCookie: () => cookie, clears: () => clears, hasSavedLogin: () => Boolean(savedLogin),
+    holdSend: () => { let release; sendGate = new Promise(resolve => { release = resolve; }); return release; },
     restart: async () => { cookie = ''; await page.reload({ waitUntil: 'commit' }); }, setOffline: value => { offline = value; },
     holdRestore: () => { let release; restoreGate = new Promise(resolve => { release = resolve; }); return () => { restoreGate = null; release(); }; } };
 }
@@ -133,8 +135,18 @@ test('Android packaged UI: durable login, devices, encrypted chat, 3-second imag
     await expect(a.page.locator('#chat-screen')).toHaveAttribute('data-view', 'chat');
     await expect(a.page.locator('#mobile-nav')).not.toBeVisible();
     await b.page.getByRole('button', { name: '与 android_alice 的会话' }).click();
+    const releaseSend = a.holdSend();
     const text = '安卓端消息 <img src=x onerror=alert(1)>'; await a.page.locator('#message-input').fill(text); await a.page.locator('#send').click();
+    await expect(a.page.locator('#message-input')).toHaveValue('');
+    await expect.poll(() => a.requests.filter(r => r.method === 'POST' && r.path.endsWith('/messages')).length).toBe(1);
+    await a.page.locator('#message-input').fill('安卓连续第二段'); await a.page.locator('#send').click();
+    await a.page.locator('#message-input').fill('安卓第三段草稿'); await expect(a.page.locator('#send')).toBeEnabled();
+    await expect(a.page.locator('.sending-preview')).toHaveCount(2);
+    expect(a.requests.filter(r => r.method === 'POST' && r.path.endsWith('/messages')).length).toBe(1); releaseSend();
     await expect(b.page.locator('.bubble').filter({ hasText: text })).toBeVisible({ timeout: 15000 });
+    await expect(b.page.locator('.bubble').filter({ hasText: '安卓连续第二段' })).toBeVisible();
+    await expect(a.page.locator('#message-input')).toHaveValue('安卓第三段草稿'); await a.page.locator('#message-input').fill('');
+    await expect(b.page.getByRole('button',{name:'双方删除',exact:true}).first().locator('svg')).toHaveCount(1);
     expect(a.requests.some(request => request.path.startsWith('/api/sync'))).toBe(true);
     expect(b.requests.some(request => request.path.startsWith('/api/sync'))).toBe(true);
     await expect.poll(() => b.realtimeSockets.size).toBe(1);

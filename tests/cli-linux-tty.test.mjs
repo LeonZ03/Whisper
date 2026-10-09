@@ -50,6 +50,10 @@ test('Linux installed CLI: real PTY, menu, masked login, Chinese chat, devices, 
     enter('来自 Linux 的中文消息'); await visible('来自 Linux 的中文消息');
     await peer.chat(username);
     await waitFor(async () => { await peer.sync(); return peer.viewMessages().some(message => message.text === '来自 Linux 的中文消息'); }, 'peer receives Linux message');
+    write('Linux 连续第一段\rLinux 连续第二段\rLinux 第三段草稿');
+    await waitFor(async () => { await peer.sync(); return peer.viewMessages().filter(m => m.text.startsWith('Linux 连续')).length === 2; }, 'Linux queued consecutive sends');
+    assert.deepEqual(peer.viewMessages().filter(m => m.text.startsWith('Linux 连续')).map(m => m.text), ['Linux 连续第一段','Linux 连续第二段']);
+    await visible('Linux 第三段草稿'); write('\x15'); await sleep(150);
     write('保留的草稿'); await peer.send('Windows 与 Linux 使用同一协议'); await visible('Windows 与 Linux 使用同一协议');
     assert.ok(screen().includes('保留的草稿')); enter('');
     await waitFor(async () => { await peer.sync(); return peer.viewMessages().some(message => message.text === '保留的草稿'); }, 'draft delivered');

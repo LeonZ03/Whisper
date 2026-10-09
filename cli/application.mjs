@@ -2,6 +2,7 @@ import { TTL, normalizeServer } from './client.mjs';
 import { CommandTranscript, historyCommand } from './transcript.mjs';
 import { accountLines, deviceLines, PRIVACY_LINES } from './account-ui.mjs';
 import { safeText } from './theme.mjs';
+import { SendQueue } from '../src/send-queue.mjs';
 import { readFileSync } from 'node:fs';
 export const CLIENT_VERSION = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
 export const HELP = [
@@ -46,11 +47,20 @@ export class ChatApplication {
     this.overlay = null; this.overlayKind = null; this.chatChoices = [];
     this.transcript = new CommandTranscript(); this.outputFocus = null;
     this.busy = false; this.closed = false; this.nextPoll = 0; this.failures = 0; this.syncing = null; this.syncAgain = false; this.realtimeState = 'closed';
+    this.sendPreviews = new Map(); this.sendTasks = new Set();
+    this.sendQueue = new SendQueue({ send: (envelope, context) => this.client.sendPrepared(envelope, context),
+      onState: (envelope, context, state) => {
+        const preview = this.sendPreviews.get(envelope.id); if (!preview) return;
+        if (state === 'cancelled') this.clearSendPreview(envelope.id);
+        else if (state !== 'failed') preview.status = state === 'queued' ? '排队中…' : state === 'sending' ? '发送中…' : '已发送，正在同步';
+        this.chatCache = null; this.render();
+      } });
     this.ui.on('expiry', (now) => {
       const clear = (body, styles) => body?.forEach((_, i) => { if (Number.isFinite(styles?.[i]?.expiresAt) && styles[i].expiresAt <= now) body[i] = ''; });
       clear(this.chatCache?.body, this.chatCache?.styles);
       this.chatCache?.groups?.forEach((group) => clear(group.body, group.styles));
-      if (this.sendPreview?.expiresAt <= now) this.clearSendPreview();
+      for (const preview of this.sendPreviews.values()) if (preview.expiresAt <= now) this.clearSendPreview(preview.id);
+      this.dissolveUntil = now + 600;
       this.chatCache = null; this.transcript.cache = null;
     });
     this.done = new Promise((resolve) => { this.resolveDone = resolve; });
@@ -107,7 +117,7 @@ export class ChatApplication {
     if (cache?.messages === c.messages && cache.peer === c.selected.peer.id && Date.now() < cache.expires) return cache;
     const body = [], keys = [], styles = [], groups = [];
     const messages = c.viewMessages();
-    if (this.sendPreview) messages.push({ ...this.sendPreview, own: true, seq: Infinity, pending: true });
+    for (const preview of this.sendPreviews.values()) messages.push({ ...preview, own: true, seq: Infinity, pending: true });
     for (const m of messages) {
       const time = new Date(m.createdAt).toLocaleTimeString('zh-CN', { hour12: false });
       const lines = [`${m.own ? '你' : '@' + c.selected.peer.username}  ${time}  ${m.pending ? m.status : '#' + m.seq}`, ...safeText(m.text).split('\n').map((line) => '  ' + line), ''];
@@ -125,11 +135,11 @@ export class ChatApplication {
   render() {
     if (this.closed) return; this.transcript.setIdentity(this.commandScope()); const c = this.client; let trust = { blocked: false, verified: false };
     const renderScope = this.scope();
-    if (this.lastRenderScope !== undefined && this.lastRenderScope !== renderScope) { this.chatCache = null; this.transcript.cache = null; this.clearSendPreview(); }
+    if (this.lastRenderScope !== undefined && this.lastRenderScope !== renderScope) { this.sendQueue.cancel(); this.chatCache = null; this.transcript.cache = null; this.clearSendPreview(); }
     this.lastRenderScope = renderScope;
-    if (this.sendPreview && (this.sendPreview.scope !== this.scope() || !c.connected || this.sendPreview.expiresAt <= Date.now() || c.messages.some((m) => m.id === this.sendPreview.id))) this.clearSendPreview();
+    for (const preview of this.sendPreviews.values()) if (preview.scope !== this.scope() || !c.connected || preview.expiresAt <= Date.now() || c.messages.some(m => m.id === preview.id)) this.clearSendPreview(preview.id);
     try { trust = c.trust(); } catch (error) { trust.blocked = true; this.notify(error.message, 'error'); }
-    if (trust.blocked) this.clearSendPreview();
+    if (trust.blocked) { this.sendQueue.cancel(); this.clearSendPreview(); }
     const peer = c.selected ? ` → @${c.selected.peer.username}` : ' → 未选择联系人';
     const transportOpen = !c.realtime || this.realtimeState === 'open';
     const status = c.realtime && !transportOpen ? '同步连接中 / 重连中' : c.connected ? '已连接' : '离线 / 重连中', identity = c.user ? `@${c.user.username}${peer}` : '未登录';
@@ -158,7 +168,7 @@ export class ChatApplication {
       selfName: c.user?.username, connected: c.connected, securityRole: c.user ? (trust.blocked ? 'error' : trust.verified ? 'success' : 'warning') : null,
       historyKey: `${c.server}:${c.user?.id || ''}:${c.selected?.id || ''}:${c.connected}:${trust.blocked}:${this.overlay ? body[0] : 'chat'}`, startAtTop: Boolean(this.overlay),
       latestSeq: c.messages.at(-1)?.seq || 0, canLoadOlder: !this.overlay && c.hasOlder, historyLoading: this.historyLoading,
-      notice: this.busy && !this.ui.pending ? this.sendPreview?.status || (this.notice === '发送中…' ? this.notice : '正在处理…') : this.notice,
+      notice: this.busy && !this.ui.pending ? this.sendPreview?.status || (this.notice === '发送中…' ? this.notice : '正在处理…') : this.dissolveUntil > Date.now() ? `消息已销毁  ${this.dissolveUntil - Date.now() > 300 ? '░ · ░' : '·   ·'}` : this.notice,
       noticeRole: this.busy && !this.ui.pending ? 'accent' : this.noticeRole,
       hint: '↑↓ 历史命令 · / 菜单 · Enter 发送 · PgUp 翻阅 · Ctrl+End 底部', prompt: this.busy && !this.ui.pending ? '… ' : '› ' });
     this.outputFocus = null;
@@ -207,8 +217,10 @@ export class ChatApplication {
   }
   async performSynchronization() {
     const user = this.client.user, loginEpoch = this.client.loginEpoch, server = this.client.server;
+    const priorIds = this.client.messages.map(m => m.id);
     try {
       await this.client.sync(); this.failures = 0;
+      if (priorIds.some(id => !this.client.messages.some(m => m.id === id))) this.dissolveUntil = Date.now() + 600;
       this.nextPoll = Date.now() + (this.client.realtime ? 2_147_483_647 : (this.client.pollIntervalMs || 2000));
       this.ensureRealtime();
       if (this.notice.startsWith('连接中断')) this.notify('已重新连接。', 'success');
@@ -271,32 +283,44 @@ export class ChatApplication {
       this.overlay = null; this.notify(result.message || '恢复完成，请重新登录并核对安全码。', 'success');
     } finally { recoveryCode = ''; password = ''; repeat = ''; }
   }
-  clearSendPreview() {
-    if (!this.sendPreview) return;
-    this.sendPreview.text = ''; this.sendPreview = null; this.chatCache = null; this.transcript.cache = null;
+  get sendPreview() { return this.sendPreviews.values().next().value || null; }
+  clearSendPreview(id) {
+    for (const preview of this.sendPreviews.values()) if (!id || preview.id === id) { preview.text = ''; this.sendPreviews.delete(preview.id); }
+    this.chatCache = null; this.transcript.cache = null;
   }
-  async sendText(text) {
-    this.overlay = null; this.overlayKind = null; this.notify('发送中…', 'accent'); this.render();
-    const scope = this.scope();
-    try {
-      await this.client.send(text, { onPending: ({ id, expiresAt }) => {
-        if (this.closed || this.scope() !== scope || !this.client.user || !Number.isFinite(expiresAt) || expiresAt <= Date.now()) return;
-        this.sendPreview = { id, expiresAt, createdAt: Date.now(), text: safeText(text), scope, status: '发送中…' };
-        this.chatCache = null; this.render();
-      } });
-      if (this.sendPreview) { this.sendPreview.status = '已发送，正在同步'; this.chatCache = null; }
+  sendText(text) {
+    if (this.sendQueue.size >= this.sendQueue.limit) throw Error('发送队列已满，请稍等再发送。');
+    const prepared = this.client.prepareSend(text); if (!prepared) return Promise.resolve();
+    const { envelope, context } = prepared, scope = this.scope();
+    this.overlay = null; this.overlayKind = null;
+    this.sendPreviews.set(envelope.id, { id: envelope.id, expiresAt: envelope.expiresAt, createdAt: Date.now(), text: safeText(text), scope, status: '排队中…' });
+    this.chatCache = null;
+    const task = this.sendQueue.enqueue(envelope, context).then(async () => {
+      if (this.closed || this.scope() !== scope || context.user !== this.client.user) return;
       this.notify('已发送。消息在本机加密后上传。', 'success'); this.render();
       await this.synchronize();
-    } catch (error) { this.clearSendPreview(); throw error; }
-    finally { text = ''; }
+    }).catch(error => {
+      this.clearSendPreview(envelope.id);
+      if (!this.closed && this.scope() === scope && error.name !== 'AbortError') { this.notify(error.message, 'error'); this.render(); }
+    }).finally(() => { this.sendTasks.delete(task); this.render(); });
+    this.sendTasks.add(task); this.notify('已排队，可继续输入。', 'accent'); this.render();
+    text = '';
+    return task;
   }
+  async waitForSends() { await Promise.all([...this.sendTasks]); }
   async execute(line, literal = false) {
+    const trimmed = line.trim(); if (!trimmed || this.closed) return;
+    let text = line, isCommand = !literal && trimmed.startsWith('/');
+    if (trimmed.startsWith('//') && !literal) { text = line.replace('//', '/'); isCommand = false; }
+    if (!isCommand && this.client.user && this.overlayKind !== 'chats') {
+      try { void this.sendText(text); }
+      catch (error) { this.notify(error.message, 'error'); if (!this.ui.buffer) { this.ui.buffer = safeText(text); this.ui.cursor = [...this.ui.buffer].length; } }
+      finally { line = ''; text = ''; this.render(); }
+      return;
+    }
     this.busy = true; this.ui.busy = true;
     try {
       if (this.syncing) await this.syncing; if (this.closed) return;
-      const trimmed = line.trim(); if (!trimmed) return;
-      let text = line, isCommand = !literal && trimmed.startsWith('/');
-      if (trimmed.startsWith('//') && !literal) { text = line.replace('//', '/'); isCommand = false; }
       if (!this.client.user && !isCommand && !literal && ['1', '2'].includes(trimmed)) { await this.authenticate(trimmed === '2'); return; }
       if (this.overlayKind === 'chats' && !literal && /^[1-9]\d*$/.test(trimmed)) {
         const chosen = this.chatChoices[Number(trimmed) - 1]; if (!chosen) throw new Error('请选择列表中的有效序号。');
@@ -307,6 +331,7 @@ export class ChatApplication {
       }
       const space = trimmed.search(/\s/), command = (space === -1 ? trimmed : trimmed.slice(0, space)).toLowerCase(), argument = space === -1 ? '' : trimmed.slice(space).trim();
       if (['/login', '/register', '/passwd', '/recover', '/me', '/devices', '/privacy', '/logout', '/help', '/chats', '/safety', '/clear', '/refresh', '/web', '/quit'].includes(command) && argument) throw new Error('此命令不接受参数；账号和密码请在交互提示中输入。');
+      if (['/logout', '/passwd', '/chat', '/server', '/quit'].includes(command)) { this.sendQueue.cancel(); this.clearSendPreview(); }
       const recalled = historyCommand(command, argument);
       if (recalled) this.ui.rememberCommand(recalled);
       switch (command) {
@@ -391,11 +416,12 @@ export class ChatApplication {
     } finally { line = ''; this.busy = false; this.ui.busy = false; this.nextPoll = Date.now() + (this.client.realtime ? 2_147_483_647 : (this.client.pollIntervalMs || 2000)); this.render(); }
   }
   async close() {
-    if (this.closed) return; this.closed = true; clearInterval(this.interval); this.client.stopRealtime?.(); this.clearSendPreview(); this.chatCache = null; this.transcript.clear(); this.ui.stop();
+    if (this.closed) return; this.closed = true; this.sendQueue.cancel(); clearInterval(this.interval); this.client.stopRealtime?.(); this.clearSendPreview(); this.chatCache = null; this.transcript.clear(); this.ui.stop();
     // Finish any in-flight restore or login before clearing unlocked memory.
     if (this.startup) await this.startup.catch(() => {});
     if (this.syncing) await this.syncing.catch(() => {});
     if (this.operation) await this.operation.catch(() => {});
+    await this.waitForSends();
     await (this.client.suspend ? this.client.suspend() : this.client.logout()).catch(() => {}); this.resolveDone();
   }
 }

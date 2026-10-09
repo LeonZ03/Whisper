@@ -298,17 +298,29 @@ export class WhisperClient {
     const conversation = await this.request('/api/conversations', 'POST', { username: usernameOf(username) });
     this.selected = conversation; this.messages = []; this.historyComplete = false; this.hasOlder = false; this.historyExpanded = false; this.resetSyncCursor(); await this.sync(); return conversation;
   }
-  async send(text, { onPending } = {}) {
+  prepareSend(text) {
     this.requireChat(); if (!text.trim()) return;
     if (Buffer.byteLength(text, 'utf8') > 16000) throw new Error('文字过长；单条最多 16,000 个 UTF-8 字节。');
-    // Recheck peer identity before encryption, not only on background polling.
-    await this.sync(); this.requireChat();
     if (this.trust().blocked) throw new Error('对方公钥变化，已阻止发送与解密。请通过可信渠道核实。');
     const envelope = encryptMessage(this.user, this.selected.peer, this.selected.id, text, { ttlMs: TTL[this.ttl] });
-    onPending?.({ id: envelope.id, expiresAt: envelope.expiresAt });
-    try { await this.request(`/api/conversations/${this.selected.id}/messages`, 'POST', envelope); }
+    return { envelope, context: { user: this.user, loginEpoch: this.loginEpoch, server: this.server, conversationId: this.selected.id, peerKey: this.selected.peer.publicKey } };
+  }
+  async sendPrepared(envelope, context) {
+    const current = () => this.user === context.user && this.loginEpoch === context.loginEpoch && this.server === context.server && this.selected?.id === context.conversationId && this.selected.peer.publicKey === context.peerKey;
+    if (!current()) throw Object.assign(Error('会话已变化，发送已取消。'), { name: 'AbortError' });
+    // Recheck identity immediately before upload; queued envelopes retain the original recipient.
+    await this.sync(); this.requireChat();
+    if (!current() || this.trust().blocked) throw Object.assign(Error('会话或对方身份已变化，发送已取消。'), { name: 'AbortError' });
+    if (envelope.expiresAt <= Date.now()) throw Object.assign(Error('排队的消息已到期，未发送。'), { notSent: true });
+    try { await this.request(`/api/conversations/${context.conversationId}/messages`, 'POST', envelope); }
     catch (error) { if (!error.status) error.message = '发送结果未知：请先 /refresh 核对，勿立即重发以免重复。'; throw error; }
     return envelope.id;
+  }
+  async send(text, { onPending } = {}) {
+    const prepared = this.prepareSend(text); if (!prepared) return;
+    const { envelope, context } = prepared;
+    onPending?.({ id: envelope.id, expiresAt: envelope.expiresAt });
+    return this.sendPrepared(envelope, context);
   }
   viewMessages() {
     if (!this.user || !this.selected || this.trust().blocked) return [];

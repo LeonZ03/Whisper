@@ -7,6 +7,7 @@ import { accountUI } from './account-ui.mjs';
 import { prepareEnrollment, validateNewPassword } from './account-client.mjs';
 import { requestAPI as api } from './api-transport.mjs';
 import { RealtimeConnection } from './realtime-client.mjs';
+import { SendQueue } from './send-queue.mjs';
 const $ = (id) => document.getElementById(id);
 const android = Boolean(globalThis.whisperAndroidRequest);
 const webLoginStore = android ? null : createWebLoginStore();
@@ -40,11 +41,24 @@ let restoringLogin = false, savedLoginPending = false;
 let cancelImageDissolve = null;
 const messageCards = new Map();
 const sendPreviews = new Map();
+const sendQueue = new SendQueue({
+  send: async (message, context) => {
+    if (context.user !== self || context.generation !== generation || selected?.id !== context.conversationId || blocked || selected.peer.publicKey !== context.peerKey) throw Object.assign(Error('会话已变化，发送已取消。'), { name: 'AbortError' });
+    await api(`/api/conversations/${context.conversationId}/messages`, 'POST', message);
+  },
+  onState: (message, context, state) => {
+    if (context.user !== self || context.generation !== generation) return;
+    const preview = sendPreviews.get(message.id);
+    if (state === 'cancelled') { removeSendPreview(message.id); return; }
+    if (preview && state !== 'failed') preview.status.textContent = state === 'queued' ? '排队中…' : state === 'sending' ? '发送中…' : '已发送，正在同步';
+    checkTrust();
+  },
+});
 const lifecycle = new MessageLifecycle($('messages'), (id) => {
   messageCards.delete(id); messages = messages.filter((m) => m.id !== id);
   if (viewingId === id) closeImage(true);
 });
-function clearMessageView() { lifecycle.clear(); messageCards.clear(); for (const preview of sendPreviews.values()) clearTimeout(preview.timer); sendPreviews.clear(); messages = []; signature = ''; }
+function clearMessageView() { sendQueue.cancel(); lifecycle.clear(); messageCards.clear(); for (const preview of sendPreviews.values()) clearTimeout(preview.timer); sendPreviews.clear(); messages = []; signature = ''; }
 function suspendMessageView() {
   suspendedReading = { top: $('messages').scrollTop, focused: document.activeElement === $('message-input') };
   const encrypted = messages, shells = [...messageCards];
@@ -92,7 +106,7 @@ function showSendPreview(id, text, expiresAt) {
   const status = document.createElement('small'); status.className = 'message-meta'; status.setAttribute('role', 'status'); status.textContent = '发送中…';
   article.append(bubble, status); box.append(article); if (atBottom) box.scrollTop = box.scrollHeight;
   const timer = setTimeout(() => removeSendPreview(id), Math.max(0, expiresAt - Date.now()));
-  sendPreviews.set(id, { article, status, timer });
+  sendPreviews.set(id, { article, bubble, status, timer });
 }
 function removeSendPreview(id) {
   const preview = sendPreviews.get(id); if (!preview) return;
@@ -308,7 +322,8 @@ function checkTrust() {
   $('trust-notice').textContent = blocked ? '对方身份公钥发生变化。已阻止发送与解密。请通过可信外部渠道核对新的完整安全码，再明确更新本机信任记录。' : verified ? '已在此浏览器核对安全码。请仍注意终端安全和截图风险。' : '首次会话，请通过可信渠道核对双方安全码；首次自动记住公钥不等于验证身份。';
   if (android) $('trust-notice').textContent = blocked ? '对方身份已变化，请核对新安全码后继续。' : verified ? '已核对安全码' : '首次会话，请核对安全码';
   $('verify').textContent = blocked ? '核对新身份' : verified ? '已核对安全码' : '核对安全码';
-  $('send').disabled = blocked || sending; $('image-button').disabled = blocked || sending;
+  if (blocked && sendQueue.size) sendQueue.cancel();
+  $('send').disabled = blocked || sendQueue.size >= sendQueue.limit; $('image-button').disabled = blocked || sending;
 }
 async function selectConversation(c) {
   generation++; syncCursor = null; suspendedReading = null; closeImage(); selected = c; messages = []; signature = ''; $('message-input').value = '';
@@ -463,7 +478,11 @@ function renderMessages() {
       else if (!m.consumedAt) { const waiting = document.createElement('small'); waiting.textContent = '等待对方查看'; bubble.append(waiting); }
     }
     const meta = document.createElement('div'); meta.className = 'message-meta'; const time = document.createElement('span'); time.textContent = new Date(m.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    time.title = '到期时间：' + new Date(m.expiresAt).toLocaleString(); const remove = document.createElement('button'); remove.textContent = '双方删除';
+    time.title = '到期时间：' + new Date(m.expiresAt).toLocaleString(); const remove = document.createElement('button');
+    remove.type = 'button'; remove.className = 'message-delete'; remove.setAttribute('aria-label', '双方删除'); remove.title = '删除这条消息';
+    const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); icon.setAttribute('viewBox', '0 0 24 24'); icon.setAttribute('aria-hidden', 'true');
+    for (const d of ['M3 6h18', 'M9 6V4h6v2', 'M5 6l1 14h12l1-14', 'M10 10v6', 'M14 10v6']) { const path = document.createElementNS(icon.namespaceURI, 'path'); path.setAttribute('d', d); icon.append(path); }
+    remove.append(icon);
     remove.onclick = async () => {
       if (!confirm('删除双方在本网站中的这条消息？无法删除截图、另存或其他副本。')) return;
       try { await api('/api/messages/' + m.id, 'DELETE'); await refreshMessages(); } catch (error) { toast(error.message); }
@@ -479,24 +498,38 @@ function renderMessages() {
   }
   box.scrollTop = stick ? box.scrollHeight : oldScroll;
 }
-$('message-form').onsubmit = async (event) => {
-  event.preventDefault(); if (!self || !selected || blocked || sending) return;
-  const text = $('message-input').value.trim(); if (!text) return;
-  sending = true; checkTrust(); const c = selected;
-  let message;
+$('message-form').onsubmit = (event) => {
+  event.preventDefault(); if (!self || !selected || blocked || androidPaused || webPaused) return;
+  const input = $('message-input'); let text = input.value.trim(); if (!text) return;
+  const context = { user: self, generation, conversationId: selected.id, peerKey: selected.peer.publicKey }; let message;
   try {
-    message = encryptMessage(self, c.peer, c.id, text, { ttlMs: Number($('ttl').value) });
+    if (sendQueue.size >= sendQueue.limit) throw Error('发送队列已满，请稍等再发送。');
+    message = encryptMessage(self, selected.peer, selected.id, text, { ttlMs: Number($('ttl').value) });
     showSendPreview(message.id, text, message.expiresAt);
-    await api(`/api/conversations/${c.id}/messages`, 'POST', message);
-    if (selected?.id === c.id && self) {
-      if ($('message-input').value.trim() === text) $('message-input').value = '';
-      const preview = sendPreviews.get(message.id); if (preview) preview.status.textContent = '已发送，正在同步';
+    input.value = '';
+    // Keep the composer available while encrypted envelopes upload in order.
+    void sendQueue.enqueue(message, context).then(() => {
+      if (context.user !== self || context.generation !== generation) return;
       void refreshMessages().catch(() => {
         const waiting = sendPreviews.get(message.id); if (waiting) waiting.status.textContent = '已发送，等待连接恢复';
       });
-    }
+    }).catch(error => {
+      if (context.user !== self || context.generation !== generation || error.name === 'AbortError') return;
+      const preview = sendPreviews.get(message.id); if (!preview) return;
+      const uncertain = !error.notSent && (!error.status || error.status >= 500);
+      preview.status.textContent = uncertain ? '发送结果未确认' : '发送失败';
+      preview.article.classList.add('send-failed');
+      const restore = document.createElement('button'); restore.type = 'button'; restore.className = 'quiet'; restore.textContent = '放回输入框';
+      restore.onclick = () => {
+        if (input.value) { toast('请先处理输入框中当前的草稿。'); return; }
+        if (uncertain && !confirm('请先核对聊天记录。发送结果未确认，重发可能产生重复消息。仍要放回输入框？')) return;
+        input.value = preview.bubble.textContent; removeSendPreview(message.id); input.focus();
+      };
+      preview.status.append(' · ', restore);
+      toast(uncertain ? '发送结果未确认，请同步后核对；消息未自动重发。' : error.message);
+    }).finally(() => checkTrust());
   } catch (error) { if (message) removeSendPreview(message.id); toast(error.message); }
-  finally { sending = false; checkTrust(); }
+  finally { text = ''; checkTrust(); }
 };
 $('message-input').onkeydown = (event) => { if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); $('message-form').requestSubmit(); } };
 $('clear-chat').onclick = async () => {

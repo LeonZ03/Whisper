@@ -122,7 +122,7 @@ test('PowerShell + ConPTY: register, masked secrets, live chat, Chinese, paste, 
   const screen = () => Array.from({ length: terminal.rows }, (_, i) => terminal.buffer.active.getLine(terminal.buffer.active.viewportY + i)?.translateToString(true) || '').join('\n');
   async function waitFor(predicate, label, timeout = 15000) {
     const end = Date.now() + timeout;
-    while (Date.now() < end) { if (predicate()) return; await sleep(100); }
+    while (Date.now() < end) { if (await predicate()) return; await sleep(100); }
     throw new Error('TTY timeout: ' + label + '\n' + screen());
   }
   const visible = (text) => waitFor(() => screen().includes(text), text), enter = (text) => child.write(text + '\r');
@@ -153,6 +153,10 @@ test('PowerShell + ConPTY: register, masked secrets, live chat, Chinese, paste, 
     enter('bobby_tty'); await visible('→ @bobby_tty'); await visible('直接输入文字即可聊天');
     enter('你好，PowerShell！'); await visible('你好，PowerShell！');
     await bob.chat('alice_tty'); assert.equal(bob.viewMessages().at(-1).text, '你好，PowerShell！');
+    child.write('连续队列第一段\r连续队列第二段\r第三段未提交草稿');
+    await waitFor(async () => { await bob.sync(); return bob.viewMessages().filter(m => m.text.startsWith('连续队列')).length === 2; }, 'queued consecutive sends');
+    assert.deepEqual(bob.viewMessages().filter(m => m.text.startsWith('连续队列')).map(m => m.text), ['连续队列第一段','连续队列第二段']);
+    await visible('第三段未提交草稿'); child.write('\x15'); await sleep(150);
     await exerciseInteraction({ child, enter, visible, waitFor, screen, bob, terminal, reportPrefix });
     child.write('待发送的草稿'); await visible('待发送的草稿');
     await bob.send('来自另一个终端的即时回复'); await visible('来自另一个终端的即时回复');

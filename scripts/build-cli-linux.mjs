@@ -73,6 +73,7 @@ try {
     safeCopy(join(root, 'src/crypto.mjs'), join(destination, 'src/crypto.mjs'));
     safeCopy(join(root, 'src/account-client.mjs'), join(destination, 'src/account-client.mjs'));
     safeCopy(join(root, 'src/realtime-client.mjs'), join(destination, 'src/realtime-client.mjs'));
+    safeCopy(join(root, 'src/send-queue.mjs'), join(destination, 'src/send-queue.mjs'));
     safeCopy(join(root, 'client-distribution/remote-entry.mjs'), join(destination, 'cli/remote-entry.mjs'));
     safeCopy(join(root, 'client-distribution/whisper'), join(destination, 'whisper'));
     safeCopy(join(root, 'client-distribution/uninstall-linux.sh'), join(destination, 'uninstall-linux.sh'));

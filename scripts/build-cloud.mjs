@@ -38,6 +38,7 @@ for(const n of ['application.mjs','client.mjs','index.mjs','terminal.mjs','theme
 copy(join(root,'src/crypto.mjs'),'src/crypto.mjs');
 copy(join(root,'src/account-client.mjs'),'src/account-client.mjs');
 copy(join(root,'src/realtime-client.mjs'),'src/realtime-client.mjs');
+copy(join(root,'src/send-queue.mjs'),'src/send-queue.mjs');
 for(const n of ['whisper.cmd','README.txt','uninstall.ps1'])copy(join(root,'client-distribution',n),n);
 copy(join(root,'client-distribution/remote-entry.mjs'),'cli/remote-entry.mjs');
 dependency('libsodium-wrappers');dependency('string-width');
@@ -92,6 +93,7 @@ for(const arch of ['x64','arm64']) {
   for(const n of ['application.mjs','client.mjs','index.mjs','terminal.mjs','theme.mjs','transcript.mjs','account-ui.mjs','login-store.mjs','linux-keyring.mjs','update.mjs'])copy(join(root,'cli',n),'cli/'+n,linuxFiles);
   copy(join(root,'src/crypto.mjs'),'src/crypto.mjs',linuxFiles);copy(join(root,'src/account-client.mjs'),'src/account-client.mjs',linuxFiles);
   copy(join(root,'src/realtime-client.mjs'),'src/realtime-client.mjs',linuxFiles);
+  copy(join(root,'src/send-queue.mjs'),'src/send-queue.mjs',linuxFiles);
   copy(join(root,'client-distribution/remote-entry.mjs'),'cli/remote-entry.mjs',linuxFiles);
   copy(join(root,'client-distribution/whisper'),'whisper',linuxFiles);
   copy(join(root,'client-distribution/uninstall-linux.sh'),'uninstall-linux.sh',linuxFiles);
