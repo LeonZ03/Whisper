@@ -193,7 +193,7 @@ npm.cmd run test:cli:install
 | `data/` | 真实账号、密文、root 激活码、运行状态；只留本机，禁止提交 |
 
 `README.md` 面向使用者；[AGENTS.md](AGENTS.md) 面向维护 AI；[CLI.md](CLI.md) 记录终端细节。
-[云端部署方案](CLOUDFLARE-DEPLOYMENT-PLAN.md) 与 [实际部署手册](cloud/DEPLOYMENT.md) 记录当前进度。**Git 推送成功、云端构建成功和线上验收通过是不同的状态；代码推送不会同步聊天数据库。**
+[实际部署手册](cloud/DEPLOYMENT.md) 统一记录当前状态和历史发布里程碑；其他项目的子域名与免费部署步骤见 [Cloudflare 接续说明](docs/cloudflare-new-project-handoff.md)。**Git 推送成功、云端构建成功和线上验收通过是不同的状态；代码推送不会同步聊天数据库。**
 生成的网页 bundle、CLI ZIP、依赖、测试报告、日志和秘密配置不入 Git；新克隆通过构建重建。
 
 安全机制与威胁边界见 [安全说明](SECURITY.md)。

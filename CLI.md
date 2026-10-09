@@ -132,7 +132,7 @@ npm.cmd run test:cli:install # 命令安装、重复安装、校验失败、安�
 ```
 
 自动测试使用临时数据库/安装目录；安装测试以 `-NoPath` 禁止修改宿主用户持久 PATH，但验证安装命令对当前测试窗口 PATH 的刷新。
-正常安装默认添加用户 PATH。本机测试结果可参阅未提交的 `CLI-VERIFICATION.md`，不把测试通过当成安全审计。
+正常安装默认添加用户 PATH。各平台已完成的验收及尚未验证的限制见 [部署验收记录](cloud/DEPLOYMENT.md)，不把测试通过当成安全审计。
 云端账号审批升级及发布状态见 `cloud/DEPLOYMENT.md`；须以实际迁移、推送与线上验收记录为准。使用正式域名不依赖提供者电脑；本机／临时隧道仍是独立实例。
 
 参考：Microsoft Invoke-WebRequest、Get-FileHash、about_Execution_Policies；Cloudflare Quick Tunnels 官方文档。
