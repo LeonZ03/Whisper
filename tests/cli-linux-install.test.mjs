@@ -40,7 +40,7 @@ test('Linux real installer: install, upgrade, reinstall, corruption rejection an
     assert.equal(existsSync(join(home,'.profile')),false);
     writeFileSync(join(install,'data','public-key-pins.json'),'synthetic-pins');writeFileSync(join(install,'data','login.keyring'),'synthetic-ciphertext');
     servingManifest=release;servingArchive=archive;
-    const upgrade=await run('/bin/bash',installArgs,{env});assert.equal(upgrade.status,0,upgrade.stderr);assert.match(upgrade.stdout,/Upgrade successful!.*0\.5\.9 -> v0\.6\.0/);
+    const upgrade=await run('/bin/bash',installArgs,{env});assert.equal(upgrade.status,0,upgrade.stderr);assert.ok(upgrade.stdout.includes(`Upgrade successful! Whisper CLI v0.5.9 -> v${release.version}.`));
     const reinstall=await run('/bin/bash',installArgs,{env});assert.equal(reinstall.status,0,reinstall.stderr);assert.match(reinstall.stdout,/Reinstallation successful!/);
     assert.equal(readFileSync(join(install,'data','public-key-pins.json'),'utf8'),'synthetic-pins');assert.equal(readFileSync(join(install,'data','login.keyring'),'utf8'),'synthetic-ciphertext');
     const help=await run(join(bin,'whisper'),['--help'],{env});assert.equal(help.status,0,help.stderr);assert.match(help.stdout,/Whisper CLI/);

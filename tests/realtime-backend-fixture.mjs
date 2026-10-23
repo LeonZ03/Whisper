@@ -14,7 +14,7 @@ export function migrationStatements(sql) {
   if (current.trim()) throw Error('Incomplete migration');
   return statements;
 }
-export async function realtimeCloudFixture({ through = 5, entry = 'cloud/worker.mjs' } = {}) {
+export async function realtimeCloudFixture({ through = 6, entry = 'cloud/worker.mjs' } = {}) {
   mkdirSync('.runtime', { recursive: true });
   const bundleDir = mkdtempSync(resolve('.runtime/realtime-backend-')), stateDir = mkdtempSync(join(tmpdir(), 'whisper-realtime-'));
   const outfile = join(bundleDir, 'worker.mjs');
@@ -29,7 +29,7 @@ export async function realtimeCloudFixture({ through = 5, entry = 'cloud/worker.
     } }] });
   try {
     const url = String(await mf.ready).replace(/\/$/, ''), db = await mf.getD1Database('DB');
-    const names = ['0001_initial.sql', '0002_accounts.sql', '0003_session_devices.sql', '0004_login_history.sql', '0005_realtime_journal.sql'].slice(0, through);
+    const names = ['0001_initial.sql', '0002_accounts.sql', '0003_session_devices.sql', '0004_login_history.sql', '0005_realtime_journal.sql', '0006_image_previews.sql'].slice(0, through);
     const result = await db.batch(migrationStatements(names.map(name => readFileSync(`cloud/migrations/${name}`, 'utf8')).join('\n')).map(sql => db.prepare(sql)));
     const metrics = result.reduce((sum, r) => ({ rowsRead: sum.rowsRead + (r.meta?.rows_read || 0), rowsWritten: sum.rowsWritten + (r.meta?.rows_written || 0) }), { rowsRead: 0, rowsWritten: 0 });
     return { mf, db, url, metrics, async close() { await mf.dispose(); rmSync(stateDir, { recursive: true, force: true, maxRetries: 6, retryDelay: 100 }); rmSync(bundleDir, { recursive: true, force: true }); } };

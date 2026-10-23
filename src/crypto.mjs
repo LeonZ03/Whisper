@@ -32,7 +32,7 @@ export function encryptMessage(user, peer, conversationId, body, { type = 'text'
   const ciphertext = b64(sodium.crypto_box_easy(plain, nonce, unb64(peer.publicKey), user.secretKey)); wipe(plain);
   return { id, type, nonce: b64(nonce), ciphertext, expiresAt };
 }
-export function decryptMessage(message, user, peer) {
+function decryptPayload(message, user, peer) {
   if (!message.ciphertext || !message.nonce) throw new Error('消息已经清理。');
   const raw = sodium.crypto_box_open_easy(unb64(message.ciphertext), unb64(message.nonce), unb64(peer.publicKey), user.secretKey);
   let payload; try { payload = JSON.parse(new TextDecoder().decode(raw)); } finally { wipe(raw); }
@@ -43,6 +43,31 @@ export function decryptMessage(message, user, peer) {
       typeof payload.body !== 'string') throw new Error('消息完整性校验失败。');
   if (payload.expiresAt <= Date.now()) throw new Error('消息已过期。');
   return payload;
+}
+export function decryptMessage(message, user, peer) {
+  const payload = decryptPayload(message, user, peer);
+  if (payload.purpose !== undefined) throw new Error('消息用途不匹配。');
+  return payload;
+}
+// A preview is only a tiny RGB grid, encrypted independently with a fresh nonce.
+// Bind it to the original envelope; it can never be substituted for the image.
+export function encryptImagePreview(message, user, peer, conversationId, preview) {
+  if (message.type !== 'image') throw new Error('图片预览类型无效。');
+  const payload = { v: 1, purpose: 'image-preview-v1', id: message.id, conversationId,
+    senderId: user.id, recipientId: peer.id, type: 'image', expiresAt: message.expiresAt,
+    body: b64(preview.pixels), width: preview.width, height: preview.height };
+  const nonce = sodium.randombytes_buf(24), plain = encoder.encode(JSON.stringify(payload));
+  try { return { nonce: b64(nonce), ciphertext: b64(sodium.crypto_box_easy(plain, nonce, unb64(peer.publicKey), user.secretKey)) }; }
+  finally { wipe(plain); }
+}
+export function decryptImagePreview(message, user, peer) {
+  if (message.type !== 'image' || message.consumedAt || !message.preview) throw new Error('预览不可用。');
+  const payload = decryptPayload({ ...message, nonce: message.preview.nonce, ciphertext: message.preview.ciphertext }, user, peer);
+  if (payload.purpose !== 'image-preview-v1' || !Number.isInteger(payload.width) || !Number.isInteger(payload.height) ||
+      payload.width < 1 || payload.width > 8 || payload.height < 1 || payload.height > 8 || payload.body.length > 256) throw new Error('图片预览无效。');
+  const pixels = unb64(payload.body);
+  if (pixels.length !== payload.width * payload.height * 3) { wipe(pixels); throw new Error('图片预览无效。'); }
+  return { width: payload.width, height: payload.height, pixels };
 }
 export async function safetyCode(user, peer) {
   const material = [user, peer].sort((a, b) => a.id.localeCompare(b.id)).map((p) => `${p.id}:${p.publicKey}`).join('|');

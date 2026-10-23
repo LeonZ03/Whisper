@@ -6,6 +6,7 @@ import { randomBytes, createHash } from 'node:crypto';
 import { zipSync, unzipSync } from 'fflate';
 import './build-android-web.mjs';
 import { verifyAndroidPackage } from './verify-android-package.mjs';
+import { androidDependencies } from './android-dependencies.mjs';
 const root = fileURLToPath(new URL('../', import.meta.url));
 const pkg = JSON.parse(readFileSync(join(root, 'package.json')));
 const sdk = process.env.ANDROID_SDK_ROOT || process.env.ANDROID_HOME || join(root, '.runtime/android-sdk');
@@ -14,6 +15,8 @@ const binary = name => javaHome ? join(javaHome, 'bin', name + (process.platform
 const tools = join(sdk, 'build-tools/35.0.0'), androidJar = join(sdk, 'platforms/android-35/android.jar');
 if (!existsSync(androidJar)) throw Error('缺少 Android SDK 35。设置 ANDROID_SDK_ROOT，或按 android/README.md 准备项目内 SDK。');
 const out = join(root, '.runtime/android-build'); mkdirSync(out, { recursive: true });
+const nativeDependencies = await androidDependencies();
+writeFileSync(join(out, 'assets/native-licenses.txt'), nativeDependencies.licenses);
 const run = (cmd, args, extra = {}) => {
   const result = spawnSync(cmd, args, { cwd: root, encoding: 'utf8', env: process.env, ...extra });
   if (result.status !== 0) throw Error(cmd + ' failed\n' + (result.stderr || result.stdout || result.error?.message || ''));
@@ -36,11 +39,13 @@ run(aapt, ['link', '-I', androidJar, '--manifest', join(out, 'AndroidManifest.xm
   '-o', join(out, 'resources.apk'), join(out, 'resources.zip'), join(out, 'icon.zip')]);
 mkdirSync(join(out, 'classes'), { recursive: true }); mkdirSync(join(out, 'dex'), { recursive: true });
 const sources = readdirSync(join(root, 'android/java/org/leonz/whisper')).filter(name => name.endsWith('.java')).map(name => join(root, 'android/java/org/leonz/whisper', name));
-run(binary('javac'), ['-encoding', 'UTF-8', '-source', '8', '-target', '8', '-classpath', androidJar, '-d', join(out, 'classes'), ...sources]);
+run(binary('javac'), ['-encoding', 'UTF-8', '-source', '8', '-target', '8', '-classpath', [androidJar, ...nativeDependencies.jars].join(process.platform === 'win32' ? ';' : ':'), '-d', join(out, 'classes'), ...sources]);
 run(binary('jar'), ['cf', join(out, 'classes.jar'), '-C', join(out, 'classes'), '.']);
-run(binary('java'), ['-cp', join(tools, 'lib/d8.jar'), 'com.android.tools.r8.D8', '--release', '--min-api', '26', '--lib', androidJar, '--output', join(out, 'dex'), join(out, 'classes.jar')]);
+run(binary('java'), ['-cp', join(tools, 'lib/d8.jar'), 'com.android.tools.r8.D8', '--release', '--min-api', '26', '--lib', androidJar, '--output', join(out, 'dex'), join(out, 'classes.jar'), ...nativeDependencies.jars]);
 const entries = unzipSync(readFileSync(join(out, 'resources.apk')));
 entries['classes.dex'] = readFileSync(join(out, 'dex/classes.dex'));
+// Android ServiceLoader needs this resource; the explicit provider property is also set before first use.
+entries['META-INF/services/org.slf4j.spi.SLF4JServiceProvider'] = Buffer.from('org.slf4j.nop.NOPServiceProvider\n');
 // Android 11+ rejects a compressed resources.arsc even if apksigner/zipalign
 // report success. Preserve the resource table as STORED, then align its offset.
 const archive = Object.fromEntries(Object.entries(entries).map(([name, bytes]) => [name, [bytes, { level: name === 'resources.arsc' ? 0 : 6 }]]));

@@ -9,6 +9,7 @@ const publicUser=u=>({id:u.id,username:u.username,publicKey:u.public_key});
 const vaultUser=u=>({...publicUser(u),salt:u.salt,vault:{nonce:u.vault_nonce,ciphertext:u.vault_cipher}});
 const envelope=m=>({seq:m.seq,id:m.id,conversationId:m.conversation_id,senderId:m.sender_id,type:m.type,
   nonce:m.type==='text'?m.nonce:null,ciphertext:m.type==='text'?m.ciphertext:null,
+  preview:m.type==='image'&&!m.consumed_at&&m.preview_ciphertext?{nonce:m.preview_nonce,ciphertext:m.preview_ciphertext}:null,
   createdAt:m.created_at,expiresAt:m.expires_at,consumedAt:m.consumed_at});
 const json=(data,status=200,headers={})=>Response.json(data,{status,headers:{...SECURITY_HEADERS,...headers}});
 function cookieToken(request) { return /(?:^|;\s*)whisper_session=([A-Za-z0-9_-]{43})(?:;|$)/.exec(request.headers.get('Cookie')||'')?.[1]; }
@@ -118,12 +119,13 @@ async function api(request,env,origin,ctx) {
     }
     if(method==='POST' && action==='messages') {
       await limit(env.SEND_LIMIT,'sender:'+userId,env);
-      const {id:mid,type,nonce,ciphertext,expiresAt}=body,now=Date.now();
+      const {id:mid,type,nonce,ciphertext,expiresAt,preview}=body,now=Date.now();
       if(typeof mid!=='string'||!UUID.test(mid)||!['text','image'].includes(type))fail(400,'无效的消息。');
       if(!Number.isSafeInteger(expiresAt)||expiresAt<=now||expiresAt>now+7*DAY+60000)fail(400,'消息保留时间必须在 7 天以内。');
       if(type==='image' && expiresAt>now+DAY+60000)fail(400,'未查看图片最多保留 24 小时。');
       validB64(nonce,24); validB64(ciphertext,17,type==='image'?1420000:24000);
-      const cmds=[stmt('INSERT INTO messages(id,conversation_id,sender_id,type,nonce,ciphertext,created_at,expires_at) VALUES(?,?,?,?,?,?,?,?)',mid,id,userId,type,type==='text'?nonce:null,type==='text'?ciphertext:null,now,expiresAt)];
+      if(preview!=null){if(type!=='image'||typeof preview!=='object')fail(400,'图片预览无效。');validB64(preview.nonce,24);validB64(preview.ciphertext,17,2048);}
+      const cmds=[stmt('INSERT INTO messages(id,conversation_id,sender_id,type,nonce,ciphertext,created_at,expires_at,preview_nonce,preview_ciphertext) VALUES(?,?,?,?,?,?,?,?,?,?)',mid,id,userId,type,type==='text'?nonce:null,type==='text'?ciphertext:null,now,expiresAt,preview?.nonce??null,preview?.ciphertext??null)];
       if(type==='image')cmds.push(stmt('INSERT INTO image_payloads VALUES(?,?,?)',mid,nonce,ciphertext));
       try {await db.batch(cmds);} catch(error) {
         if(String(error).includes('UNIQUE'))fail(409,'消息已存在，不能重复发送。');
@@ -140,7 +142,7 @@ async function api(request,env,origin,ctx) {
       if(m.type!=='image'||m.sender_id===userId)fail(403,'只有接收方可以打开阅后图片。');
       const payload=await first("DELETE FROM image_payloads WHERE message_id=? AND EXISTS (SELECT 1 FROM messages m JOIN conversations c ON c.id=m.conversation_id JOIN users a ON a.id=c.a JOIN users b ON b.id=c.b WHERE m.id=image_payloads.message_id AND (c.a=? OR c.b=?) AND m.sender_id<>? AND m.expires_at>? AND m.consumed_at IS NULL AND c.archived_at IS NULL AND m.seq>c.history_from_seq AND a.status='active' AND b.status='active') RETURNING nonce,ciphertext",m.id,userId,userId,userId,Date.now());
       if(!payload)fail(410,'图片已经被打开、过期或删除。');
-      return finish(json({...envelope(m),nonce:payload.nonce,ciphertext:payload.ciphertext}));
+      return finish(json({...envelope(m),preview:null,nonce:payload.nonce,ciphertext:payload.ciphertext}));
     }
   }
   fail(404,'接口不存在。');

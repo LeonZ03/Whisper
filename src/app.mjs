@@ -1,4 +1,5 @@
-import { ready, b64, unb64, wipe, deriveCredentials, unlockIdentity, encryptMessage, decryptMessage, safetyCode } from './crypto.mjs';
+import { ready, b64, unb64, wipe, deriveCredentials, unlockIdentity, encryptMessage, decryptMessage, encryptImagePreview, decryptImagePreview, safetyCode } from './crypto.mjs';
+import { sampleImagePreview, paintImagePreview } from './image-preview.mjs';
 import { MessageLifecycle, dissolveViewOnceImage } from './message-lifecycle.mjs';
 import { createAccountSessionsUI } from './account-sessions-ui.mjs';
 import { createWebAccountUI } from './web-account-ui.mjs';
@@ -62,7 +63,7 @@ function clearMessageView() { sendQueue.cancel(); lifecycle.clear(); messageCard
 function suspendMessageView() {
   suspendedReading = { top: $('messages').scrollTop, focused: document.activeElement === $('message-input') };
   const encrypted = messages, shells = [...messageCards];
-  for (const [, card] of shells) card.element.replaceChildren();
+  for (const [, card] of shells) { scrubPreview(card.element); card.element.replaceChildren(); }
   clearMessageView(); messages = encrypted;
   for (const [id, card] of shells) { card.key = ''; messageCards.set(id, card); $('messages').append(card.element); }
 }
@@ -72,8 +73,9 @@ function startRealtime() {
   if (realtime) { realtime.start(); return; }
   const url = android ? 'wss://whisper.leonz03.dpdns.org/api/realtime' : new URL('/api/realtime', location.href);
   if (!android) url.protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  realtime = new RealtimeConnection({ request: api, url: String(url), onChange: () => sync(),
-    onState: state => { if (self) connection(state === 'open'); } });
+  const options = { user: self, request: api, url: String(url), onChange: () => sync(),
+    onState: state => { if (self) connection(state === 'open'); } };
+  realtime = android && globalThis.whisperAndroidRealtimeFactory ? globalThis.whisperAndroidRealtimeFactory(options) : new RealtimeConnection(options);
   realtime.start();
 }
 const pins = () => {
@@ -276,6 +278,7 @@ function lock({ keepSaved = false, broadcast = true } = {}) {
   clearMessageView(); $('conversations').replaceChildren(); $('safety-code').textContent = '';
   $('chat-screen').hidden = true; $('auth-screen').hidden = false;
   if (android) {
+    $('background-connection').hidden = true;
     globalThis.whisperAndroidClearSession(); mobileView('conversations');
     $('my-name').textContent = ''; $('my-avatar').textContent = ''; $('privacy-dialog').close();
     $('chat-options').close();
@@ -351,7 +354,7 @@ async function refreshMessages(prefetched) {
   for (const item of result) removeSendPreview(item.id);
   messages = result;
   if (viewingId && !messages.some((m) => m.id === viewingId)) closeImage();
-  const sig = JSON.stringify(result.map((m) => [m.id, m.consumedAt, m.ciphertext, m.nonce, m.expiresAt]));
+  const sig = JSON.stringify(result.map((m) => [m.id, m.consumedAt, m.ciphertext, m.nonce, m.preview, m.expiresAt]));
   if (sig !== signature) { signature = sig; renderMessages(); }
   connection(true);
 }
@@ -407,7 +410,7 @@ function applyDelta(result) {
     }
     messages = [...merged.values()].filter(m => m.expiresAt > Date.now()).sort((a, b) => a.seq - b.seq);
     if (viewingId && !messages.some(m => m.id === viewingId)) closeImage();
-    const sig = JSON.stringify(messages.map(m => [m.id, m.consumedAt, m.ciphertext, m.nonce, m.expiresAt, blocked]));
+    const sig = JSON.stringify(messages.map(m => [m.id, m.consumedAt, m.ciphertext, m.nonce, m.preview, m.expiresAt, blocked]));
     if (signature !== sig) { signature = sig; renderMessages(); }
     if (suspendedReading) {
       $('messages').scrollTop = suspendedReading.top;
@@ -450,32 +453,42 @@ function syncDelta() {
   })().finally(() => { deltaTask = null; });
   return deltaTask;
 }
+function scrubPreview(element) { for (const canvas of element.querySelectorAll('canvas')) canvas.width = canvas.height = 0; }
 function renderMessages() {
   const box = $('messages'); const stick = box.scrollHeight - box.scrollTop - box.clientHeight < 140;
   const oldScroll = box.scrollTop;
   messages = messages.filter((m) => m.expiresAt > Date.now());
   const present = new Set(messages.map(m => m.id));
   for (const [id, card] of messageCards) {
-    if (!present.has(id) && !lifecycle.entries.has(id)) { card.element.replaceChildren(); card.element.remove(); messageCards.delete(id); }
+    if (!present.has(id) && !lifecycle.entries.has(id)) { scrubPreview(card.element); card.element.replaceChildren(); card.element.remove(); messageCards.delete(id); }
   }
   lifecycle.reconcile(new Set(messages.map((m) => m.id)), messages.length >= 200 ? messages[0].seq : 0);
   if (messages.length) box.querySelector('.messages-empty')?.remove();
   if (!messages.length && !sendPreviews.size) lifecycle.emptyState();
   for (const m of messages) {
-    const key = JSON.stringify([m.ciphertext, m.nonce, m.expiresAt, m.consumedAt, blocked]);
+    const key = JSON.stringify([m.ciphertext, m.nonce, m.preview, m.expiresAt, m.consumedAt, blocked]);
     const previous = messageCards.get(m.id);
     if (previous?.key === key) continue;
-    const own = m.senderId === self.id; const article = previous?.element ?? document.createElement('article'); article.replaceChildren(); article.className = 'message' + (own ? ' own' : ''); article.dataset.messageId = m.id; article.dataset.seq = String(m.seq);
+    const own = m.senderId === self.id; const article = previous?.element ?? document.createElement('article'); scrubPreview(article); article.replaceChildren(); article.className = 'message' + (own ? ' own' : ''); article.dataset.messageId = m.id; article.dataset.seq = String(m.seq);
     const bubble = document.createElement('div'); bubble.className = 'bubble';
     if (blocked) { bubble.textContent = '公钥变化，已阻止解密。'; }
     else if (m.type === 'text') {
       try { const payload = decryptMessage(m, self, selected.peer); bubble.textContent = payload.body; }
       catch { bubble.textContent = '无法解密：消息可能损坏、过期或身份不匹配。'; }
     } else {
-      bubble.classList.add('image-card'); const title = document.createElement('strong'); title.textContent = m.consumedAt ? '▧ 图片已清理' : '▧ 阅后图片';
-      const desc = document.createElement('small'); desc.textContent = m.consumedAt ? '已经打开，不能再次查看' : '仅可打开一次 · 显示 3 秒'; bubble.append(title, desc);
-      if (!m.consumedAt && !own) { const open = document.createElement('button'); open.className = 'quiet'; open.textContent = '打开图片'; open.dataset.openImage = m.id; open.onclick = () => openImage(m, open); bubble.append(open); }
-      else if (!m.consumedAt) { const waiting = document.createElement('small'); waiting.textContent = '等待对方查看'; bubble.append(waiting); }
+      bubble.classList.add('image-card');
+      if (m.consumedAt) { const title = document.createElement('strong'); title.textContent = '图片已清理'; bubble.append(title); }
+      else {
+        const card = document.createElement(own ? 'div' : 'button'); card.className = 'flash-card';
+        if (!own) { card.type = 'button'; card.setAttribute('aria-label', '打开图片'); card.dataset.openImage = m.id; card.onclick = () => openImage(m, card); }
+        let preview;
+        try { preview = decryptImagePreview(m, self, selected.peer); card.append(paintImagePreview(preview)); }
+        catch { card.classList.add('flash-unavailable'); }
+        finally { wipe(preview?.pixels); }
+        const label = document.createElement('span'); label.className = 'flash-label'; label.textContent = own ? '闪图 · 等待查看' : '闪图 · 点击查看';
+        const note = document.createElement('span'); note.className = 'flash-note'; note.textContent = '仅一次 · 3 秒';
+        card.append(label, note); bubble.append(card);
+      }
     }
     const meta = document.createElement('div'); meta.className = 'message-meta'; const time = document.createElement('span'); time.textContent = new Date(m.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     time.title = '到期时间：' + new Date(m.expiresAt).toLocaleString(); const remove = document.createElement('button');
@@ -565,7 +578,7 @@ async function prepareImage(file) {
         const context = canvas.getContext('2d'); if (!context) throw new Error('浏览器无法处理这张图片。');
         context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
         const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/webp', quality));
-        if (blob && blob.size <= 1_000_000) return { bytes: new Uint8Array(await blob.arrayBuffer()), mime: blob.type };
+        if (blob && blob.size <= 1_000_000) return { preview: sampleImagePreview(bitmap), bytes: new Uint8Array(await blob.arrayBuffer()), mime: blob.type };
       }
       throw new Error('压缩后仍超过 1 MB，请选择分辨率更低的图片。');
     } finally { canvas.width = canvas.height = 0; }
@@ -580,28 +593,34 @@ $('image-input').onchange = async () => {
   try {
     prepared = await prepareImage(file); if (self !== user) return;
     const message = encryptMessage(user, c.peer, c.id, b64(prepared.bytes), { type: 'image', ttlMs: Math.min(Number($('ttl').value), 86400000), mime: prepared.mime });
+    message.preview = encryptImagePreview(message, user, c.peer, c.id, prepared.preview);
     await api(`/api/conversations/${c.id}/messages`, 'POST', message); if (selected?.id === c.id) await refreshMessages(); toast('图片已在本机压缩、加密并发送。');
-  } catch (error) { toast(error.message); } finally { wipe(prepared?.bytes); sending = false; checkTrust(); }
+  } catch (error) { toast(error.message); } finally { wipe(prepared?.bytes); wipe(prepared?.preview?.pixels); sending = false; checkTrust(); }
 };
 async function openImage(m, button) {
-  if (!self || !selected || blocked || viewingId) return;
-  if (!confirm('现在打开？关闭、切换标签页或 3 秒后将无法再次查看。网络中断也可能导致图片失效。')) return;
-  const user = self, peer = selected.peer, c = selected.id; button.disabled = true;
+  if (!self || !selected || blocked || viewingId || androidPaused || document.hidden) return;
+  const user = self, peer = selected.peer, c = selected.id, g = generation; button.disabled = true; viewingId = m.id;
+  button.setAttribute('aria-busy', 'true');
   try {
     const envelope = await api('/api/messages/' + m.id + '/open', 'POST');
-    if (self !== user || selected?.id !== c || androidPaused) return;
+    if (self !== user || selected?.id !== c || androidPaused || document.hidden || generation !== g || viewingId !== m.id) return;
     const payload = decryptMessage(envelope, user, peer);
     if (!['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(payload.mime)) throw new Error('图片格式无效。');
     const bytes = unb64(payload.body); imageUrl = URL.createObjectURL(new Blob([bytes], { type: payload.mime })); wipe(bytes);
     viewingId = m.id; $('view-image').alt = '阅后图片'; $('view-image').src = imageUrl;
     await $('view-image').decode();
-    if (self !== user || selected?.id !== c || viewingId !== m.id || m.expiresAt <= Date.now()) { closeImage(); return; }
+    if (self !== user || selected?.id !== c || viewingId !== m.id || generation !== g) return;
+    if (androidPaused || document.hidden || m.expiresAt <= Date.now()) { closeImage(); return; }
     $('image-dialog').showModal();
     const deadline = Math.min(Date.now() + 3_000, m.expiresAt);
     const tick = () => { const seconds = Math.max(0, Math.ceil((deadline - Date.now()) / 1000)); $('image-countdown').textContent = `${seconds} 秒后关闭`; if (!seconds) closeImage(true); };
     tick(); imageTimer = setInterval(tick, 200); await refreshMessages();
-  } catch (error) { closeImage(); toast(error.message); await refreshMessages().catch(() => {}); }
-  finally { button.disabled = false; }
+  } catch (error) {
+    if (self === user && selected?.id === c && generation === g && viewingId === m.id) {
+      closeImage(); toast(error.message); await refreshMessages().catch(() => {});
+    }
+  }
+  finally { button.disabled = false; button.removeAttribute('aria-busy'); }
 }
 function closeImage(animate = false) {
   clearInterval(imageTimer); imageTimer = null;
@@ -616,6 +635,11 @@ function closeImage(animate = false) {
 }
 $('close-image').onclick = () => closeImage(true); $('image-dialog').addEventListener('cancel', () => closeImage());
 if (android) {
+  globalThis.whisperAndroidBackgroundState = enabled => {
+    const toggle = $('background-connection'); toggle.hidden = self?.role !== 'member';
+    toggle.setAttribute('aria-checked', String(enabled)); $('background-connection-status').textContent = enabled ? '已开启' : '已关闭';
+  };
+  $('background-connection').onclick = () => { void realtime?.enableBackground?.($('background-connection').getAttribute('aria-checked') !== 'true'); };
   const leaveChat = (view) => {
     generation++; syncCursor = null; suspendedReading = null; closeImage(); $('safety-dialog').close(); selected = null; clearMessageView();
     $('message-input').value = ''; $('conversation-panel').hidden = true; $('empty-state').hidden = false;
@@ -646,9 +670,9 @@ if (android) {
     else if (self && $('chat-screen').dataset.view === 'my') leaveChat(self.role === 'root' ? 'admin' : 'conversations');
     else globalThis.whisperAndroidExit();
   };
-  globalThis.whisperAndroidPause = () => { androidPaused = true; generation++; stopRealtime(); closeImage(); if (!suspendedReading) suspendMessageView(); sessionsUI.clear(); };
+  globalThis.whisperAndroidPause = () => { androidPaused = true; generation++; if (realtime?.pause) realtime.pause(); else stopRealtime(); closeImage(); if (!suspendedReading) suspendMessageView(); sessionsUI.clear(); };
   globalThis.whisperAndroidResume = () => {
-    androidPaused = false; lifecycle.tick({ animate: false });
+    androidPaused = false; lifecycle.tick({ animate: false }); void realtime?.resume?.();
     if (savedLoginPending) void restoreSavedLogin();
     else { void sync().then(startRealtime); if (self && ['my', 'devices'].includes($('chat-screen').dataset.view)) void sessionsUI.load(); }
   };
@@ -662,11 +686,14 @@ if (android) {
 }
 document.addEventListener('visibilitychange', () => {
   lifecycle.tick({ animate: false });
-  if (document.hidden) { generation++; stopRealtime(); closeImage(); }
+  if (document.hidden) {
+    if (android) globalThis.whisperAndroidPause();
+    else { generation++; stopRealtime(); closeImage(); }
+  } else if (android) globalThis.whisperAndroidResume();
   else if (!androidPaused) void sync().then(startRealtime);
 });
 window.addEventListener('focus', () => { lifecycle.tick({ animate: false }); webAccountUI?.resume(); if (realtimeSupported && !document.hidden) void sync().then(startRealtime); });
-function networkLost() { generation++; stopRealtime(); connection(false); closeImage(); if (!suspendedReading) suspendMessageView(); }
+function networkLost() { generation++; if (!realtime?.pause) stopRealtime(); connection(false); closeImage(); if (!suspendedReading) suspendMessageView(); }
 window.addEventListener('offline', networkLost);
 window.addEventListener('online', () => { if (savedLoginPending) void restoreSavedLogin(); else { void sync().then(startRealtime); webAccountUI?.resume(); } });
 window.addEventListener('pagehide', () => { if (android) globalThis.whisperAndroidPause(); else { webPaused = true; lock({ keepSaved: true }); } });

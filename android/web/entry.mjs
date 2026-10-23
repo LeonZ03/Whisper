@@ -1,4 +1,5 @@
 // Installed before the shared client starts. The APK only loads packaged assets.
+import { AndroidRealtimeConnection } from './realtime.mjs';
 const pending = new Map();
 let sequence = 0;
 globalThis.whisperAndroidRequest = (path, method, body) => new Promise((resolve, reject) => {
@@ -24,6 +25,9 @@ globalThis.whisperAndroidSaveLogin = async identity => Boolean(await globalThis.
 globalThis.whisperAndroidRestoreLogin = async () => {
   const value = await globalThis.WhisperNative.restoreLogin(); return value ? JSON.parse(value) : null;
 };
+if (typeof globalThis.WhisperNative.startRealtime === 'function') {
+  globalThis.whisperAndroidRealtimeFactory = options => new AndroidRealtimeConnection(options);
+}
 await import('../../src/app.mjs');
 document.querySelector('#app-update')?.addEventListener('click', () => globalThis.WhisperNative.checkUpdate?.(true));
 setTimeout(() => globalThis.WhisperNative.checkUpdate?.(false), 5000);

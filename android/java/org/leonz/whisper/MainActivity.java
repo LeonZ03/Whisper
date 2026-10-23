@@ -3,6 +3,8 @@ package org.leonz.whisper;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.Intent;
+import android.Manifest;
+import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.net.Uri;
 import android.net.ConnectivityManager;
@@ -41,10 +43,13 @@ public final class MainActivity extends Activity {
     private SessionVault vault;
     private AppUpdater updater;
     private final ExecutorService requests = Executors.newFixedThreadPool(3);
-    private final AtomicInteger sessionEpoch = new AtomicInteger();
+    private AtomicInteger sessionEpoch;
+    private SessionState session;
+    private volatile long pendingRealtimeStart = -1;
+    private final SessionState.Listener realtimeListener = value -> { if (this.foreground) js("globalThis.whisperAndroidRealtimeEvent?.(" + value + ")"); };
     private ValueCallback<Uri[]> fileCallback;
-    private boolean destroyed;
-    private boolean foreground;
+    private volatile boolean destroyed;
+    private volatile boolean foreground;
     private boolean networkReady;
     private ConnectivityManager connectivity;
     private ConnectivityManager.NetworkCallback networkCallback;
@@ -65,9 +70,10 @@ public final class MainActivity extends Activity {
                 () -> js("globalThis.whisperAndroidBack?.()"));
         }
         getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
-        vault = new SessionVault(this);
+        session = SessionState.get(this); sessionEpoch = session.epoch;
+        vault = session.vault;
         updater = new AppUpdater(this);
-        transport = new CloudTransport(Build.MANUFACTURER + " " + Build.MODEL + " / Android " + Build.VERSION.RELEASE);
+        transport = session.transport; session.listen(realtimeListener);
         web = new WebView(this);
         web.setBackgroundColor(Color.rgb(250, 252, 251));
         web.setImportantForAutofill(View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS);
@@ -158,7 +164,10 @@ public final class MainActivity extends Activity {
         // onPause clears visible content; the device-bound login survives backgrounding.
         super.onStop();
     }
-    @Override protected void onResume() { super.onResume(); foreground = true; if (web != null) js("globalThis.whisperAndroidResume?.()"); }
+    @Override protected void onResume() {
+        super.onResume(); foreground = true;
+        if (web != null) { js("globalThis.whisperAndroidResume?.()"); realtimeListener.changed(session.snapshot()); }
+    }
     @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
         if (requestCode == 72 && updater != null) { updater.installPending(); return; }
@@ -171,13 +180,69 @@ public final class MainActivity extends Activity {
     @Override protected void onSaveInstanceState(Bundle state) { /* No session or form persistence. */ }
     @Override protected void onDestroy() {
         if (connectivity != null && networkCallback != null) connectivity.unregisterNetworkCallback(networkCallback);
-        destroyed = true; sessionEpoch.incrementAndGet(); transport.clearSession(); requests.shutdownNow();
+        destroyed = true; session.unlisten(realtimeListener);
+        synchronized (session) {
+            // shutdownNow may discard a queued validation entirely; release only this Activity's
+            // unlaunched request so a recreated Activity is not stuck in connecting forever.
+            if (pendingRealtimeStart == session.startGeneration && session.starting && !session.serviceRequested) session.failStart(pendingRealtimeStart);
+        }
+        requests.shutdownNow();
         if (updater != null) updater.destroy();
         if (fileCallback != null) { fileCallback.onReceiveValue(null); fileCallback = null; }
         web.removeJavascriptInterface("WhisperNative"); web.clearCache(true); web.clearHistory(); web.destroy(); web = null;
         super.onDestroy();
     }
     public final class NativeBridge {
+        @JavascriptInterface public String realtimeState() { return session.snapshot(); }
+        @JavascriptInterface public void stopRealtime() { session.stop(true); }
+        @JavascriptInterface public void startRealtime(String userId, String publicKey) {
+            if (destroyed || !foreground || !RealtimePolicy.identity(userId, publicKey)) return;
+            final int epoch = sessionEpoch.get();
+            final long startGeneration;
+            // Synchronously scope the next snapshot before the JS bridge returns to a new login.
+            synchronized (session) {
+                if (session.running && !session.stopping && session.startGeneration == session.validatedGeneration
+                    && !session.revoked && !session.suppressed && userId.equals(session.userId) && publicKey.equals(session.publicKey)) { session.publish(); return; }
+                if (session.starting && userId.equals(session.userId) && publicKey.equals(session.publicKey)) return;
+                startGeneration = ++session.startGeneration; session.validatedGeneration = -1;
+                session.userId = userId; session.publicKey = publicKey; session.revoked = false;
+                session.suppress(false);
+                // Do not reuse an Android service for which stopService/onDestroy is already pending.
+                // Its onDestroy publishes stopped again; the visible client can then retry normally.
+                if (session.stopping) { session.starting = false; session.state = "stopped"; session.publish(); return; }
+                pendingRealtimeStart = startGeneration; session.starting = true; session.state = "connecting";
+            }
+            session.publish();
+            runOnUiThread(() -> {
+                if (!session.currentStart(startGeneration, epoch)) return;
+                if (destroyed || !foreground) { session.failStart(startGeneration); return; }
+                // Native validation prevents bundled JS lifecycle mistakes from starting an unauthenticated service.
+                requests.execute(() -> {
+                    CloudTransport.Result result = transport.request("/api/account/me", "GET", "", epoch, sessionEpoch);
+                    runOnUiThread(() -> {
+                        synchronized (session) {
+                            if (!session.currentStart(startGeneration, epoch) || !session.starting) return;
+                            if (result.status == 401 || result.status == 403 || result.status == 200 && !SessionState.matches(result, userId, publicKey)) { session.clear(true); return; }
+                            if (destroyed || !foreground || result.status != 200) { session.failStart(startGeneration); return; }
+                            try {
+                                session.validatedGeneration = startGeneration; session.serviceRequested = true;
+                                // Public generation only, never a cookie, ticket or identity key in an Intent.
+                                startForegroundService(new Intent(MainActivity.this, RealtimeService.class).putExtra(RealtimeService.GENERATION, startGeneration));
+                            } catch (RuntimeException ignored) {
+                                session.serviceRequested = false; session.failStart(startGeneration); return;
+                            }
+                        }
+                        try {
+                            if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+                                && !getPreferences(MODE_PRIVATE).getBoolean("notificationAsked", false)) {
+                                getPreferences(MODE_PRIVATE).edit().putBoolean("notificationAsked", true).apply();
+                                requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 73);
+                            }
+                        } catch (RuntimeException ignored) { /* A denied notification prompt does not stop a running service. */ }
+                    });
+                });
+            });
+        }
         @JavascriptInterface public void checkUpdate(boolean manual) { runOnUiThread(() -> { if (!destroyed) updater.check(manual); }); }
         @JavascriptInterface public void request(String id, String path, String method, String body) {
             if (id == null || !id.matches("[0-9]{1,10}") || destroyed) return;
@@ -185,7 +250,10 @@ public final class MainActivity extends Activity {
             requests.execute(() -> {
                 CloudTransport.Result result = transport.request(path, method, body, epoch, sessionEpoch);
                 if (epoch != sessionEpoch.get() || destroyed) return;
-                runOnUiThread(() -> { if (epoch == sessionEpoch.get()) js("globalThis.whisperAndroidResponse(" + JSONObject.quote(id) + "," + result.status + "," + JSONObject.quote(result.body) + ")"); });
+                runOnUiThread(() -> { if (epoch == sessionEpoch.get()) {
+                    js("globalThis.whisperAndroidResponse(" + JSONObject.quote(id) + "," + result.status + "," + JSONObject.quote(result.body) + ")");
+                    if ((result.status == 401 || result.status == 403) && path.equals("/api/account/me")) session.clear(true);
+                } });
             });
         }
         @JavascriptInterface public boolean saveLogin(String identity) {
@@ -205,7 +273,7 @@ public final class MainActivity extends Activity {
             }
         }
         @JavascriptInterface public void clearSession() {
-            synchronized (sessionEpoch) { sessionEpoch.incrementAndGet(); transport.clearSession(); vault.clear(); }
+            session.clear(false);
         }
         @JavascriptInterface public void exit() { runOnUiThread(() -> finish()); }
     }

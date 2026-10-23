@@ -34,7 +34,7 @@ export function syncStatement(db, { userId, tokenHash, selected, cursor, now = D
       'conversationId',(SELECT id FROM selected),'serverTime',p.now,
       'conversations',json(COALESCE((SELECT json_group_array(json_object('id',id,'peer',json_object('id',peer_id,'username',peer_name,'publicKey',peer_key),'updatedAt',updated)) FROM conversation_rows),'[]')),
       'removedConversations',json(COALESCE((SELECT json_group_array(id) FROM changed_conversations WHERE id NOT IN (SELECT id FROM live)),'[]')),
-      'messages',json(COALESCE((SELECT json_group_array(json_object('seq',seq,'id',id,'conversationId',conversation_id,'senderId',sender_id,'type',type,'nonce',CASE WHEN type='text' THEN nonce ELSE NULL END,'ciphertext',CASE WHEN type='text' THEN ciphertext ELSE NULL END,'createdAt',created_at,'expiresAt',expires_at,'consumedAt',consumed_at)) FROM (SELECT * FROM message_rows ORDER BY seq)),'[]')),
+      'messages',json(COALESCE((SELECT json_group_array(json_object('seq',seq,'id',id,'conversationId',conversation_id,'senderId',sender_id,'type',type,'nonce',CASE WHEN type='text' THEN nonce ELSE NULL END,'ciphertext',CASE WHEN type='text' THEN ciphertext ELSE NULL END,'preview',json(CASE WHEN type='image' AND consumed_at IS NULL AND preview_ciphertext IS NOT NULL THEN json_object('nonce',preview_nonce,'ciphertext',preview_ciphertext) ELSE 'null' END),'createdAt',created_at,'expiresAt',expires_at,'consumedAt',consumed_at)) FROM (SELECT * FROM message_rows ORDER BY seq)),'[]')),
       'removed',json(COALESCE((SELECT json_group_array(id) FROM removed_messages),'[]'))
     ) AS payload FROM state,checkpoint,p`).bind(userId, tokenHash, selected, cursor, now);
 }

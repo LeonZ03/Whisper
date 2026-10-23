@@ -14,7 +14,7 @@ const b64 = size => Buffer.alloc(size, 1).toString('base64');
 export function createRateFixture(capacities = {}) {
   const sqlite = new DatabaseSync(':memory:');
   sqlite.exec('PRAGMA foreign_keys=ON');
-  for (const name of ['0001_initial.sql', '0002_accounts.sql', '0003_session_devices.sql', '0004_login_history.sql', '0005_realtime_journal.sql']) {
+  for (const name of ['0001_initial.sql', '0002_accounts.sql', '0003_session_devices.sql', '0004_login_history.sql', '0005_realtime_journal.sql', '0006_image_previews.sql']) {
     sqlite.exec(readFileSync(new URL('../cloud/migrations/' + name, import.meta.url), 'utf8'));
   }
   const trace = [], pending = [], base = localStore(sqlite);

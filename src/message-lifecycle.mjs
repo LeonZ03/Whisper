@@ -103,6 +103,7 @@ export class MessageLifecycle {
     this.entries.delete(id);
     const el = item.element, rect = el.getBoundingClientRect(), bubbleRect = el.querySelector('.bubble')?.getBoundingClientRect() || rect;
     // Erase content and event-handler closures before any decorative animation.
+    for (const canvas of el.querySelectorAll('canvas')) canvas.width = canvas.height = 0;
     el.replaceChildren(); el.removeAttribute('title');
     el.classList.add('message-retiring'); el.dataset.removalReason = reason;
     el.setAttribute('aria-hidden', 'true'); el.inert = true;
@@ -137,6 +138,7 @@ export class MessageLifecycle {
   clear() {
     clearInterval(this.interval); this.interval = null;
     for (const timer of this.fading.values()) clearTimeout(timer);
+    for (const canvas of this.box.querySelectorAll('canvas')) canvas.width = canvas.height = 0;
     this.fading.clear(); this.entries.clear(); this.box.replaceChildren();
   }
 }

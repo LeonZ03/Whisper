@@ -18,6 +18,31 @@ async function client(browser) {
   const context = await browser.newContext({ viewport: { width: 393, height: 800 } });
   let cookie = '', requests = [], clears = 0, savedLogin = null, offline = false, restoreGate = null, sendGate = null;
   const realtimeSockets = new Set(), realtimeFailures = [];
+  let nativeSocket = null, nativeEpoch = 0;
+  const nativeState = { userId: '', state: 'stopped', revision: 0, revoked: false, suppressed: false };
+  const nativeEmit = page => page.evaluate(state => globalThis.whisperAndroidRealtimeEvent?.(state), { ...nativeState }).catch(() => {});
+  const nativeStop = () => { nativeEpoch++; nativeSocket?.close(); nativeSocket = null; nativeState.state = 'stopped'; };
+  context.on('close', nativeStop);
+  await context.exposeBinding('androidRealtimeState', () => JSON.stringify(nativeState));
+  await context.exposeBinding('androidRealtimeStop', async ({ page }) => { nativeStop(); nativeState.suppressed = true; await nativeEmit(page); });
+  await context.exposeBinding('androidRealtimeStart', async ({ page }, userId) => {
+    if (nativeSocket && nativeState.userId === userId) { await nativeEmit(page); return; }
+    nativeStop(); const epoch = nativeEpoch;
+    Object.assign(nativeState, { userId, state: 'connecting', revoked: false, suppressed: false });
+    const response = await fetch(app.localUrl + '/api/realtime/ticket', { method: 'POST', headers: { Cookie: cookie, Origin: app.localUrl, 'X-Whisper-Request': '1', 'Content-Type': 'application/json' }, body: '{}' });
+    if (epoch !== nativeEpoch) return;
+    if (!response.ok) { nativeState.revoked = response.status === 401 || response.status === 403; await nativeEmit(page); return; }
+    const { ticket } = await response.json();
+    const socket = nativeSocket = new WebSocket(app.localUrl.replace('http:', 'ws:') + '/api/realtime', ['whisper-realtime-v1', 'ticket.' + ticket]);
+    realtimeSockets.add(socket);
+    socket.on('message', data => {
+      if (nativeSocket !== socket) return;
+      const message = JSON.parse(data.toString());
+      if (message.type === 'ready' || message.type === 'changed') { nativeState.state = 'open'; nativeState.revision++; void nativeEmit(page); }
+    });
+    socket.on('error', () => realtimeFailures.push('隔离原生桥连接失败'));
+    socket.on('close', code => { realtimeSockets.delete(socket); if (nativeSocket !== socket) return; nativeSocket = null; nativeState.state = 'stopped'; nativeState.revoked = code === 1008; void nativeEmit(page); });
+  });
   // Keep the packaged client's fixed WSS endpoint and exact CSP. Playwright
   // routes that endpoint to an isolated real WebSocket handshake; no production
   // connection or account is used. This is browser bridge coverage, not a device test.
@@ -45,7 +70,7 @@ async function client(browser) {
     if (path === '/api/health') data = JSON.stringify({ ...JSON.parse(data), environment: 'cloud', pollIntervalMs: 2000 });
     await page.evaluate(({ id, status, data }) => globalThis.whisperAndroidResponse(id, status, data), { id, status: response.status, data });
   });
-  await context.exposeBinding('androidClear', () => { cookie = ''; savedLogin = null; clears++; });
+  await context.exposeBinding('androidClear', () => { nativeStop(); cookie = ''; savedLogin = null; clears++; });
   await context.exposeBinding('androidSave', (_, identity) => { savedLogin = { cookie, identity }; return true; });
   await context.exposeBinding('androidRestore', () => { if (!savedLogin) return ''; cookie = savedLogin.cookie; return savedLogin.identity; });
   await context.addInitScript(() => {
@@ -56,6 +81,7 @@ async function client(browser) {
     }).observe(document, { childList: true, subtree: true, attributes: true, attributeFilter: ['hidden'] });
     globalThis.WhisperNative = {
       checkUpdate: manual => { globalThis.updateCheckManual = manual; },
+      startRealtime: (id, key) => { void globalThis.androidRealtimeStart(id, key); }, stopRealtime: () => { void globalThis.androidRealtimeStop(); }, realtimeState: () => globalThis.androidRealtimeState(),
       request: (id, path, method, body) => { void globalThis.androidRequest(id, path, method, body); },
       saveLogin: identity => globalThis.androidSave(identity), restoreLogin: () => globalThis.androidRestore(),
       clearSession: () => { void globalThis.androidClear(); }, exit: () => { globalThis.androidExited = true; }
@@ -105,7 +131,7 @@ test('Android packaged UI: durable login, devices, encrypted chat, 3-second imag
     await expect(a.page.locator('#account-sessions')).toContainText('本机');
     await expect(a.page.locator('#account-sessions')).not.toContainText('Android App');
     await expect(a.page.locator('#account-sessions')).not.toContainText('127.0.0.1');
-    expect(await a.page.locator('#service-settings .setting-row').evaluate(el => getComputedStyle(el).borderLeftWidth)).toBe('0px');
+    expect(await a.page.locator('#service-settings .setting-row').evaluateAll(rows => rows.every(el => getComputedStyle(el).borderLeftWidth === '0px'))).toBe(true);
     expect(await a.page.locator('#account-sessions').evaluate(el => el.getBoundingClientRect().bottom <= document.getElementById('service-settings').getBoundingClientRect().top)).toBe(true);
     expect(await a.page.locator('#privacy-button').evaluate(el => getComputedStyle(el).borderLeftWidth)).toBe('0px');
     await a.page.screenshot({ path: 'test-results/android/my.png' });
@@ -159,11 +185,19 @@ test('Android packaged UI: durable login, devices, encrypted chat, 3-second imag
     expect(readFileSync(join(dir, 'whisper.sqlite')).includes(Buffer.from(text))).toBe(false);
     const loginRequests = a.requests.filter(r => r.path === '/api/auth/login').length;
     const originalCookie = a.getCookie();
+    const keptSocket = [...a.realtimeSockets][0];
     await a.page.evaluate(() => globalThis.whisperAndroidPause());
     await expect(a.page.locator('#chat-screen')).toBeVisible(); await expect(a.page.locator('.bubble')).toHaveCount(0);
     expect(a.getCookie()).toBe(originalCookie); expect(a.hasSavedLogin()).toBe(true);
+    expect(a.realtimeSockets.has(keptSocket)).toBe(true);
+    const pausedRequests = a.requests.length;
+    await b.page.locator('#message-input').fill('后台等待中的新消息'); await b.page.locator('#send').click();
+    await expect(b.page.locator('.sending-preview')).toHaveCount(0);
+    await a.page.waitForTimeout(300); expect(a.requests.length).toBe(pausedRequests);
     await a.page.evaluate(() => globalThis.whisperAndroidResume());
     await expect(a.page.locator('.bubble').filter({ hasText: text })).toBeVisible();
+    expect(a.realtimeSockets.has(keptSocket)).toBe(true);
+    await expect(a.page.locator('.bubble').filter({ hasText: '后台等待中的新消息' })).toBeVisible();
     const releaseRestore = a.holdRestore();
     try {
       await a.restart(); await expect(a.page.locator('#chat-screen')).toBeVisible();
@@ -190,9 +224,13 @@ test('Android packaged UI: durable login, devices, encrypted chat, 3-second imag
     expect(await a.page.locator('#safety-code').innerText()).toBe(await b.page.locator('#safety-code').innerText());
     await a.page.locator('#mark-verified').click(); await b.page.locator('#mark-verified').click();
     await a.page.screenshot({ path: 'test-results/android/chat.png' });
-    const png = await a.page.evaluate(() => { const canvas = document.createElement('canvas'); canvas.width = 200; canvas.height = 120; const ctx = canvas.getContext('2d'); ctx.fillStyle = '#235c51'; ctx.fillRect(0, 0, 200, 120); return canvas.toDataURL('image/png').split(',')[1]; });
+    const png = await a.page.evaluate(() => { const canvas = document.createElement('canvas'); canvas.width = 200; canvas.height = 120; const ctx = canvas.getContext('2d'); const sky = ctx.createLinearGradient(0, 0, 200, 120); sky.addColorStop(0, '#88b6ce'); sky.addColorStop(1, '#e8cba6'); ctx.fillStyle = sky; ctx.fillRect(0, 0, 200, 120); ctx.fillStyle = '#466c58'; ctx.beginPath(); ctx.moveTo(0, 100); ctx.lineTo(75, 30); ctx.lineTo(160, 120); ctx.fill(); ctx.fillStyle = '#eed4a1'; ctx.fillRect(135, 65, 35, 55); ctx.fillStyle = '#384f47'; ctx.font = '12px sans-serif'; ctx.fillText('TEST', 140, 90); return canvas.toDataURL('image/png').split(',')[1]; });
     await a.page.locator('#image-input').setInputFiles({ name: 'image.png', mimeType: 'image/png', buffer: Buffer.from(png, 'base64') });
     await expect(b.page.getByRole('button', { name: '打开图片', exact: true })).toBeVisible({ timeout: 15000 });
+    await expect(b.page.locator('canvas.flash-preview')).toBeVisible();
+    expect(await b.page.locator('canvas.flash-preview').evaluate(c => Math.max(c.width, c.height))).toBeLessThanOrEqual(8);
+    expect(b.requests.some(r => r.path.endsWith('/open'))).toBe(false);
+    await b.page.screenshot({ path: 'test-results/android/flash-preview.png' });
     await b.page.getByRole('button', { name: '打开图片', exact: true }).click(); await expect(b.page.locator('#image-dialog')).toBeVisible();
     await b.page.evaluate(() => globalThis.whisperAndroidPause());
     await expect(b.page.locator('#image-dialog')).not.toBeVisible(); await expect(b.page.locator('#view-image')).not.toHaveAttribute('src', /.+/);
@@ -202,8 +240,24 @@ test('Android packaged UI: durable login, devices, encrypted chat, 3-second imag
     expect(app.db.prepare("SELECT ciphertext FROM messages WHERE type='image'").get().ciphertext).toBe(null);
     await a.page.locator('#image-input').setInputFiles({ name: 'second.png', mimeType: 'image/png', buffer: Buffer.from(png, 'base64') });
     await expect(b.page.getByRole('button', { name: '打开图片', exact: true })).toBeVisible({ timeout: 15000 });
+    await b.page.evaluate(() => {
+      const image = document.getElementById('view-image'), decode = image.decode.bind(image);
+      globalThis.imageDecodes = [];
+      image.decode = async () => { await decode(); await new Promise(resolve => globalThis.imageDecodes.push(resolve)); };
+    });
     await b.page.getByRole('button', { name: '打开图片', exact: true }).click();
+    await expect.poll(() => b.page.evaluate(() => globalThis.imageDecodes.length)).toBe(1);
+    await b.page.waitForTimeout(3200); await expect(b.page.locator('#image-dialog')).not.toBeVisible();
+    await b.page.evaluate(() => { globalThis.whisperAndroidPause(); globalThis.whisperAndroidResume(); });
+    await expect(b.page.getByRole('button', { name: '打开图片', exact: true })).toHaveCount(0);
+    await a.page.locator('#image-input').setInputFiles({ name: 'third.png', mimeType: 'image/png', buffer: Buffer.from(png, 'base64') });
+    await expect(b.page.getByRole('button', { name: '打开图片', exact: true })).toBeVisible({ timeout: 15000 });
+    await b.page.getByRole('button', { name: '打开图片', exact: true }).click();
+    await expect.poll(() => b.page.evaluate(() => globalThis.imageDecodes.length)).toBe(2);
+    await b.page.evaluate(() => { globalThis.imageDecodes[1](); delete document.getElementById('view-image').decode; });
     await expect(b.page.locator('#image-countdown')).toContainText('3 秒');
+    await b.page.evaluate(() => globalThis.imageDecodes[0]());
+    await expect(b.page.locator('#image-dialog')).toBeVisible();
     await expect(b.page.locator('#view-image')).not.toHaveAttribute('src', /.+/, { timeout: 3800 });
     await expect(b.page.locator('#image-dialog')).not.toBeVisible({ timeout: 1500 });
     await expect(b.page.locator('#view-image')).toHaveCount(1);

@@ -11,6 +11,7 @@
 .message-countdown.expiring-now{color:#a54435;background:#fdefe9}
 .message-countdown.consumed{color:#8b998f;background:transparent}
 @media(max-width:600px){.message-countdown{font-size:10px}.message-meta{gap:6px}.image-card{min-width:0}}
+.bubble.image-card:has(.flash-card){padding:4px;min-width:0;overflow:hidden}.flash-card{position:relative;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px;width:216px;max-width:60vw;height:156px;border:0;border-radius:9px;overflow:hidden;color:#fff;background:#4d665b;padding:16px;isolation:isolate}.flash-preview{position:absolute;inset:0;width:100%;height:100%;image-rendering:pixelated;z-index:-2}.flash-card::after{content:'';position:absolute;inset:0;background:#15291d59;z-index:-1}.flash-label{font-size:14px;font-weight:600;letter-spacing:.5px;text-shadow:0 1px 4px #0008}.flash-note{font-size:12px;text-shadow:0 1px 4px #0008}.flash-card:focus-visible{outline:3px solid #235c51;outline-offset:3px}.flash-card[aria-busy=true]{opacity:.65;cursor:wait}.flash-card[aria-busy=true] .flash-label{font-size:0}.flash-card[aria-busy=true] .flash-label::after{content:'正在打开…';font-size:14px}
 
 /* Account approval and owner-only administration; no external UI dependencies. */
 .weak-password-note{font-size:11px;line-height:1.8;color:#976b32;background:#fffaf0;border:1px solid #eee4cc;padding:10px 12px;border-radius:8px}

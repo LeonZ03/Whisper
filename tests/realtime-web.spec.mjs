@@ -7,6 +7,7 @@ import { join } from 'node:path';
 const cryptoStub = `export const ready=Promise.resolve();
 export const b64=()=>'',unb64=()=>new Uint8Array(32),wipe=()=>{},randomSalt=()=>'';
 export const deriveCredentials=async()=>({}),createIdentity=()=>({}),unlockIdentity=()=>new Uint8Array(32),rewrapIdentity=()=>({});
+export const encryptImagePreview=()=>{throw Error('not part of this fixture')},decryptImagePreview=()=>{throw Error('legacy image without preview')};
 export const encryptMessage=(user,peer,conversationId,text)=>({id:'send-'+(globalThis.fixtureSendId=(globalThis.fixtureSendId||0)+1),conversationId,senderId:user.id,type:'text',ciphertext:text,nonce:'fixture',createdAt:Date.now(),expiresAt:Date.now()+60000}),decryptMessage=m=>({body:m.ciphertext}),safetyCode=async()=>'';`;
 const user = { id: 'fixture-user', username: 'alice', publicKey: 'alice-key', role: 'member', mustChangePassword: false };
 const conversation = { id: '11111111-1111-4111-8111-111111111111', updatedAt: 1, peer: { id: 'fixture-peer', username: 'bobby', publicKey: 'peer-key' } };

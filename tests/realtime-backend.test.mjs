@@ -103,13 +103,18 @@ test('real Workers/D1 SQLite DO: one-use, hibernation, audience, atomic images a
     assert.equal(invalidExpiry.status, 400);
     await f.mf.unsafeEvictDurableObject('realtime-test', 'RealtimeHub', { name: 'hub-v1', webSockets: 'hibernate' });
     receiver.ws.send('ping'); assert.equal(await receiver.inbox.next(v => v === 'pong'), 'pong');
-    const image = message('image'); await json(f, a, `/api/conversations/${conversation.id}/messages`, 'POST', image);
+    const image = { ...message('image'), preview: { nonce: base64(24), ciphertext: base64(180) } }; await json(f, a, `/api/conversations/${conversation.id}/messages`, 'POST', image);
+    const previewSync = await json(f, b, `/api/sync?conversationId=${conversation.id}&cursor=${before.cursor}`);
+    assert.deepEqual(previewSync.messages.find(m => m.id === image.id).preview, image.preview);
+    assert.equal(previewSync.messages.find(m => m.id === image.id).ciphertext, null);
     await receiver.inbox.next(v => v?.type === 'changed');
     const claims = await Promise.all(Array.from({ length: 6 }, () => request(f, b, `/api/messages/${image.id}/open`, 'POST')));
     assert.equal(claims.filter(r => r.status === 200).length, 1); assert.equal(claims.filter(r => r.status === 410).length, 5);
     const claimed = await json(f, b, `/api/sync?conversationId=${conversation.id}&cursor=${before.cursor}`);
     assert.ok(claimed.messages[0].consumedAt); assert.equal(claimed.messages[0].nonce, null); assert.equal(claimed.messages[0].ciphertext, null);
     assert.equal(await f.db.prepare('SELECT * FROM image_payloads WHERE message_id=?').bind(image.id).first(), null);
+    assert.equal(claimed.messages[0].preview, null);
+    assert.equal((await f.db.prepare('SELECT preview_ciphertext FROM messages WHERE id=?').bind(image.id).first()).preview_ciphertext, null);
     await new Promise(resolve => setTimeout(resolve, 50)); assert.equal(outsider.inbox.queue.some(v => v?.type === 'changed'), false);
     const initial = claimed.cursor, now = Date.now();
     const inserts = Array.from({ length: 205 }, () => f.db.prepare("INSERT INTO messages(id,conversation_id,sender_id,type,nonce,ciphertext,created_at,expires_at) VALUES(?,?,?,'text',?,?,?,?)").bind(randomUUID(), conversation.id, a.id, base64(24), base64(48), now, now + 600000));
@@ -175,6 +180,8 @@ test('additive migration keeps old D1 writers and DELETE RETURNING claim compati
     const before = await f.db.prepare('SELECT * FROM messages WHERE id=?').bind(image.id).first();
     await f.db.batch(migrationStatements(readFileSync('cloud/migrations/0005_realtime_journal.sql', 'utf8')).map(sql => f.db.prepare(sql)));
     assert.deepEqual(await f.db.prepare('SELECT * FROM messages WHERE id=?').bind(image.id).first(), before);
+    await f.db.batch(migrationStatements(readFileSync('cloud/migrations/0006_image_previews.sql', 'utf8')).map(sql => f.db.prepare(sql)));
+    assert.deepEqual(await f.db.prepare('SELECT * FROM messages WHERE id=?').bind(image.id).first(), { ...before, preview_nonce: null, preview_ciphertext: null });
     const claims = await Promise.all(Array.from({ length: 4 }, () => f.db.prepare('DELETE FROM image_payloads WHERE message_id=? RETURNING nonce,ciphertext').bind(image.id).first()));
     assert.equal(claims.filter(Boolean).length, 1); assert.ok((await f.db.prepare('SELECT consumed_at FROM messages WHERE id=?').bind(image.id).first()).consumed_at);
     assert.equal((await f.db.prepare("SELECT COUNT(*) AS n FROM realtime_journal WHERE kind='message' AND entity_id=?").bind(image.id).first()).n, 1);

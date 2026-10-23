@@ -3,11 +3,18 @@
   <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="35" />
   <uses-permission android:name="android.permission.INTERNET" />
   <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+  <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
   <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
   <application android:label="Whisper" android:icon="@drawable/app_icon"
     android:theme="@style/AppTheme" android:allowBackup="false"
     android:fullBackupContent="false" android:dataExtractionRules="@xml/data_extraction_rules"
     android:usesCleartextTraffic="false" android:debuggable="false">
+    <service android:name=".RealtimeService" android:exported="false" android:foregroundServiceType="specialUse">
+      <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+        android:value="User-enabled, stoppable connection for a privately distributed messenger without an external push provider. Receives encrypted-chat change notifications only, with a persistent notification; no message content processing in background." />
+    </service>
     <provider android:name=".UpdateProvider" android:authorities="org.leonz.whisper.updates"
       android:exported="false" android:grantUriPermissions="true" />
     <activity android:name=".MainActivity" android:exported="true"

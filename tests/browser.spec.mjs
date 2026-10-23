@@ -75,11 +75,19 @@ test('两个浏览器真实加密聊天、图片、删除、越权及跨入口�
     const png = await a.evaluate(() => { const canvas = document.createElement('canvas'); canvas.width = 240; canvas.height = 160; const ctx = canvas.getContext('2d'); ctx.fillStyle = '#dce9de'; ctx.fillRect(0, 0, 240, 160); ctx.fillStyle = '#235c51'; ctx.font = '24px sans-serif'; ctx.fillText('Whisper test', 35, 85); return canvas.toDataURL('image/png').split(',')[1]; });
     await a.locator('#image-input').setInputFiles({ name: 'test.png', mimeType: 'image/png', buffer: Buffer.from(png, 'base64') });
     await expect(b.getByRole('button', { name: '打开图片', exact: true })).toBeVisible({ timeout: 10000 });
+    await expect(a.locator('canvas.flash-preview')).toBeVisible();
+    await expect(b.locator('canvas.flash-preview')).toBeVisible();
+    expect(await b.locator('canvas.flash-preview').evaluate(c => Math.max(c.width, c.height))).toBeLessThanOrEqual(8);
+    expect(app.db.prepare("SELECT consumed_at FROM messages WHERE type='image'").get().consumed_at).toBe(null);
+    let openDialogs = 0; const countDialog = () => openDialogs++; b.on('dialog', countDialog);
     await b.getByRole('button', { name: '打开图片', exact: true }).click(); await expect(b.locator('#image-dialog')).toBeVisible();
+    b.off('dialog', countDialog); expect(openDialogs).toBe(0);
     await b.screenshot({ path: 'test-results/view-once.png', fullPage: true });
     await b.locator('#close-image').click(); await expect(b.locator('#image-dialog')).not.toBeVisible();
     await expect(b.getByRole('button', { name: '打开图片', exact: true })).toHaveCount(0);
     expect(app.db.prepare("SELECT ciphertext FROM messages WHERE type='image'").get().ciphertext).toBe(null);
+    expect(app.db.prepare("SELECT preview_ciphertext FROM messages WHERE type='image'").get().preview_ciphertext).toBe(null);
+    await expect(a.locator('canvas.flash-preview')).toHaveCount(0);
     const oversizedPng = await a.evaluate(() => {
       const canvas = document.createElement('canvas'); canvas.width = 2200; canvas.height = 1600;
       const context = canvas.getContext('2d'), pixels = context.createImageData(canvas.width, canvas.height);

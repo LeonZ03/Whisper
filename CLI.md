@@ -1,6 +1,8 @@
 # Whisper CLI：安装与聊天
 
-当前源码版本为 0.6.2；已安装版本以 `whisper --version` 为准。正式服务与发布包状态见 [部署手册](cloud/DEPLOYMENT.md)。
+当前源码版本为 0.6.3；已安装版本以 `whisper --version` 为准。正式服务与发布包状态见 [部署手册](cloud/DEPLOYMENT.md)。
+
+0.6.3 网页与 Android 支持闪图马赛克预览；Windows / Linux CLI 继续通过 `/web` 引导到网页，不领取、解密显示或保存图片。现有安全码、身份、公钥固定和受保护登录继续使用，正常执行 `whisper update` 更新。
 
 ## 后续更新
 

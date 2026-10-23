@@ -1,0 +1,25 @@
+{
+  "dependencies": [
+    {
+      "filename": "Java-WebSocket-1.6.0.jar",
+      "url": "https://repo.maven.apache.org/maven2/org/java-websocket/Java-WebSocket/1.6.0/Java-WebSocket-1.6.0.jar",
+      "sha256": "eae29213e4f16515639c28957200f011b3967fffcada1962cf0255d24919c22f",
+      "license": "MIT",
+      "licenseUrl": "https://github.com/TooTallNate/Java-WebSocket/blob/v1.6.0/LICENSE"
+    },
+    {
+      "filename": "slf4j-api-2.0.13.jar",
+      "url": "https://repo.maven.apache.org/maven2/org/slf4j/slf4j-api/2.0.13/slf4j-api-2.0.13.jar",
+      "sha256": "e7c2a48e8515ba1f49fa637d57b4e2f590b3f5bd97407ac699c3aa5efb1204a9",
+      "license": "MIT",
+      "licenseEntry": "META-INF/LICENSE.txt"
+    },
+    {
+      "filename": "slf4j-nop-2.0.13.jar",
+      "url": "https://repo.maven.apache.org/maven2/org/slf4j/slf4j-nop/2.0.13/slf4j-nop-2.0.13.jar",
+      "sha256": "8962a107b4a8bdf80b6c17e470cd3614ad3329643833ff5cf0c60c7dce9deaac",
+      "license": "MIT",
+      "licenseEntry": "META-INF/LICENSE.txt"
+    }
+  ]
+}

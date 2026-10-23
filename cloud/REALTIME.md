@@ -10,14 +10,16 @@
 - 连接后发 `{type:"ready", version:1}`；数据提交后的通知为 `{type:"changed", version:1}`。每次发送前检查会话仍有效；撤销时关闭旧连接。无客户端会话订阅参数，因此不能指定他人账号。通知只是授权账号的失效提示，具体内容仍经同步接口的参与权限检查。
 - 心跳：客户端每 45 秒发字符串 `ping`，服务端回 `pong`。DO 使用 `acceptWebSocket` 和 `setWebSocketAutoResponse`；没有扫描数据库的常驻计时器。心跳只检测传输，不延续会话有效期。
 - `GET /api/sync?conversationId=<uuid>&cursor=<整数>`。两个参数均可省略；省略 cursor、游标超过高水位或落后于保留范围时返回快照 `reset:true`。选中会话改变时须丢弃游标并请求快照。没有选中会话时只同步会话列表。
-- 返回 `{version:1,cursor,reset,more,conversationId,conversations,removedConversations,messages,removed,serverTime}`。conversations 使用原有会话对象；messages 使用原有消息 envelope（图片密文及 nonce 始终为 null）；removed 和 removedConversations 为 ID 数组。reset 时替换会话列表及所选会话消息（最近 200 条），增量时按 ID 合并更新/删除，保留已加载旧页。失效或封存的所选会话返回 conversationId:null，清空内容。
+- 返回 `{version:1,cursor,reset,more,conversationId,conversations,removedConversations,messages,removed,serverTime}`。conversations 使用原有会话对象；messages 使用原有消息 envelope（原图片密文及 nonce 始终为 null；0.6.3 可带独立加密的粗色块 `preview`，已领取时为 null）；removed 和 removedConversations 为 ID 数组。reset 时替换会话列表及所选会话消息（最近 200 条），增量时按 ID 合并更新/删除，保留已加载旧页。失效或封存的所选会话返回 conversationId:null，清空内容。
 - 游标与数据必须来自同一数据库批次的稳定视图。分页最多 200 条 journal 事件，more:true 时串行继续补拉。游标提交必须发生在当前代的响应被成功应用之后；重复通知合并，旧账号/旧会话/旧请求结果不能覆盖新状态。
 
 ## 持久变更记录与通知
 
 新增版本化迁移 0005：有界元数据 journal（至多 10,000 条），以 SQLite 触发器在同一事务记录新增、删除、领取、会话创建/封存/重新打开、身份或状态变化。不得包含额外消息密文、图片、凭据或 IP；原有图片 DELETE RETURNING 原子领取不变。到期由既有绝对时间驱动，后台清理也产生删除记录。快照与增量都再次校验当前成员资格、状态及 history_from_seq。
 
-写接口提交后触发通知。通知异常不得改变成功的写入结果。账号操作触发连接复核，撤销连接不再接收变化通知；不能依靠前台主动退出保证撤销。通知遗漏由每 60–90 秒一次的增量校验及重连补拉恢复。正常连接停用旧高频轮询；断线使用 30–45 秒备用同步，重连指数退避并抖动，上限 60 秒；网络恢复可以立即重试一次。前后台变化暂停/恢复连接，恢复先补拉。
+写接口提交后触发通知。通知异常不得改变成功的写入结果。账号操作触发连接复核，撤销连接不再接收变化通知；不能依靠前台主动退出保证撤销。通知遗漏由每 60–90 秒一次的增量校验及重连补拉恢复。正常连接停用旧高频轮询；断线使用 30–45 秒备用同步，重连指数退避并抖动，上限 60 秒；网络恢复可以立即重试一次。网页前后台变化暂停/恢复连接，恢复先补拉。
+
+0.6.3 Android 默认由可停止的原生前台服务维护同一条连接，返回桌面仅暂停界面同步并清除显示内容；通知只递增内存变化计数，恢复前台再补拉。原生通道每 90 秒复核登录；连续运行一天理论上约 960 次认证请求，另有心跳、建连及前台增量请求，不代表系统省电状态下的实际流量测量。关闭“后台保持连接”后仅使用前台 WebView 连接。显式退出、确认撤销和账号变化使旧连接失效；进程结束或系统限制仍可能断开。前台启动失败沿用有界低频修复时钟重试，不在后台重启被用户停止的服务。具体打包、权限和真机边界见 [Android 说明](../android/README.md)。
 
 ## 实施分工
 

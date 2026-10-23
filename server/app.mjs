@@ -76,6 +76,11 @@ export async function createWhisperServer(options = {}) {
     try { db.exec(readFileSync(resolve(root, 'cloud/migrations/0005_realtime_journal.sql'), 'utf8')); db.exec('COMMIT'); }
     catch (error) { db.exec('ROLLBACK'); db.close(); throw error; }
   }
+  if (!db.prepare('PRAGMA table_info(messages)').all().some(c => c.name === 'preview_nonce')) {
+    db.exec('BEGIN IMMEDIATE');
+    try { db.exec(readFileSync(resolve(root, 'server/image-preview-schema.sql'), 'utf8')); db.exec('COMMIT'); }
+    catch (error) { db.exec('ROLLBACK'); db.close(); throw error; }
+  }
   const instance = randomUUID();
   const sessions = new Map();
   const limits = new Map();
@@ -173,6 +178,7 @@ export async function createWhisperServer(options = {}) {
   const envelope = (m, reveal = false) => ({ seq: m.seq, id: m.id, conversationId: m.conversation_id, senderId: m.sender_id, type: m.type,
     nonce: m.type === 'text' || reveal ? m.nonce : null,
     ciphertext: m.type === 'text' || reveal ? m.ciphertext : null,
+    preview: !reveal && m.type === 'image' && !m.consumed_at && m.preview_ciphertext ? { nonce: m.preview_nonce, ciphertext: m.preview_ciphertext } : null,
     createdAt: m.created_at, expiresAt: m.expires_at, consumedAt: m.consumed_at });
   async function authHash(secret, salt) {
     if (authBusy >= 2) fail(429, '正在处理登录，请稍后重试。');
@@ -260,20 +266,24 @@ export async function createWhisperServer(options = {}) {
   });
   app.post('/api/conversations/:id/messages', auth, (req, res) => {
     const c = conversation(req, req.params.id); rate(req, `send:${req.userId}`, 90);
-    const { id, type, nonce, ciphertext, expiresAt } = req.body;
+    const { id, type, nonce, ciphertext, expiresAt, preview } = req.body;
     if (typeof id !== 'string' || !UUID.test(id) || !['text', 'image'].includes(type)) fail(400, '无效的消息。');
     const now = Date.now();
     if (!Number.isSafeInteger(expiresAt) || expiresAt <= now || expiresAt > now + 7 * DAY + 60_000) fail(400, '消息保留时间必须在 7 天以内。');
     if (type === 'image' && expiresAt > now + DAY + 60_000) fail(400, '未查看图片最多保留 24 小时。');
     base64(nonce, 24); base64(ciphertext, 17, type === 'text' ? 24_000 : 1_500_000);
+    if (preview != null) {
+      if (type !== 'image' || typeof preview !== 'object') fail(400, '图片预览无效。');
+      base64(preview.nonce, 24); base64(preview.ciphertext, 17, 2048);
+    }
     if (db.prepare('SELECT COUNT(*) AS n FROM messages').get().n >= 10_000) fail(507, '消息数量达到实验站上限，请先清理。');
     const pages = db.prepare('PRAGMA page_count').get().page_count;
     const free = db.prepare('PRAGMA freelist_count').get().freelist_count;
     const pageSize = db.prepare('PRAGMA page_size').get().page_size;
-    if ((pages - free) * pageSize + ciphertext.length > 512 * 1024 * 1024) fail(507, '存储达到实验站上限，请先清理。');
+    if ((pages - free) * pageSize + ciphertext.length + (preview?.ciphertext.length || 0) > 512 * 1024 * 1024) fail(507, '存储达到实验站上限，请先清理。');
     try {
-      db.prepare('INSERT INTO messages(id,conversation_id,sender_id,type,nonce,ciphertext,created_at,expires_at) VALUES(?,?,?,?,?,?,?,?)')
-        .run(id, c.id, req.userId, type, nonce, ciphertext, now, expiresAt);
+      db.prepare('INSERT INTO messages(id,conversation_id,sender_id,type,nonce,ciphertext,created_at,expires_at,preview_nonce,preview_ciphertext) VALUES(?,?,?,?,?,?,?,?,?,?)')
+        .run(id, c.id, req.userId, type, nonce, ciphertext, now, expiresAt, preview?.nonce ?? null, preview?.ciphertext ?? null);
     } catch (error) { if (String(error.message).includes('UNIQUE')) fail(409, '消息已存在，不能重复发送。'); throw error; }
     res.status(201).json({ ok: true, id });
   });
