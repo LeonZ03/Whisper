@@ -23,7 +23,7 @@ async function api(request,env,origin,ctx) {
   const url=new URL(request.url), path=url.pathname, method=request.method;
   if (path==='/api/health' && method==='GET') return json({ok:true,app:'Whisper',version:__APP_VERSION__,
     instance:env.INSTANCE_ID,environment:'cloud',commit:__COMMIT__,pollIntervalMs:2000,
-    registration:'approval',passwordPolicy:{min:1,max:12},capabilities:['message-history-v1','cloud-d1-v1','accounts-v2','realtime-sync-v1']});
+    registration:'approval',passwordPolicy:{min:1,max:12},capabilities:['message-history-v1','cloud-d1-v1','accounts-v2','realtime-sync-v1','send-key-check-v1']});
   const ip=request.headers.get('CF-Connecting-IP')||'local';
   // Coarse anonymous abuse guard precedes any credential-shaped database lookup.
   await limit(env.COARSE_LIMIT,await digest('coarse-ip:'+ip),env);
@@ -42,7 +42,8 @@ async function api(request,env,origin,ctx) {
   const rateActor=tokenHash && await first("SELECT u.id FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=? AND s.expires_at>? AND s.credential_version=u.credential_version AND u.status='active'",tokenHash,Date.now());
   await limit(env.API_LIMIT,rateActor?'api-user:'+rateActor.id:await digest('api-anonymous:'+ip),env);
   const mutating=!['GET','HEAD'].includes(method) && path!=='/api/realtime/ticket';
-  const before=mutating?await journalHigh(db):null;
+  const sendMessage=method==='POST' && /^\/api\/conversations\/[^/]+\/messages$/.test(path);
+  let before=mutating&&!sendMessage?await journalHigh(db):null;
   const finish=response=>{
     if(mutating && response.ok) {
       const notification=notifyRealtime(env,db,before,{revalidateAll:/^\/api\/(auth|account|admin)\//.test(path)}).catch(()=>{});
@@ -119,26 +120,50 @@ async function api(request,env,origin,ctx) {
     }
     if(method==='POST' && action==='messages') {
       await limit(env.SEND_LIMIT,'sender:'+userId,env);
-      const {id:mid,type,nonce,ciphertext,expiresAt,preview}=body,now=Date.now();
+      const {id:mid,type,nonce,ciphertext,expiresAt,preview,recipientPublicKey}=body,now=Date.now();
       if(typeof mid!=='string'||!UUID.test(mid)||!['text','image'].includes(type))fail(400,'无效的消息。');
       if(!Number.isSafeInteger(expiresAt)||expiresAt<=now||expiresAt>now+7*DAY+60000)fail(400,'消息保留时间必须在 7 天以内。');
       if(type==='image' && expiresAt>now+DAY+60000)fail(400,'未查看图片最多保留 24 小时。');
       validB64(nonce,24); validB64(ciphertext,17,type==='image'?1420000:24000);
       if(preview!=null){if(type!=='image'||typeof preview!=='object')fail(400,'图片预览无效。');validB64(preview.nonce,24);validB64(preview.ciphertext,17,2048);}
-      const cmds=[stmt('INSERT INTO messages(id,conversation_id,sender_id,type,nonce,ciphertext,created_at,expires_at,preview_nonce,preview_ciphertext) VALUES(?,?,?,?,?,?,?,?,?,?)',mid,id,userId,type,type==='text'?nonce:null,type==='text'?ciphertext:null,now,expiresAt,preview?.nonce??null,preview?.ciphertext??null)];
-      if(type==='image')cmds.push(stmt('INSERT INTO image_payloads VALUES(?,?,?)',mid,nonce,ciphertext));
-      try {await db.batch(cmds);} catch(error) {
+      if(recipientPublicKey!=null)validB64(recipientPublicKey,32);
+      const insert=stmt(`INSERT INTO messages(id,conversation_id,sender_id,type,nonce,ciphertext,created_at,expires_at,preview_nonce,preview_ciphertext)
+        SELECT ?,c.id,?,?,?,?,?,?,?,? FROM conversations c JOIN users a ON a.id=c.a JOIN users b ON b.id=c.b
+        WHERE c.id=? AND (c.a=? OR c.b=?) AND c.archived_at IS NULL AND a.status='active' AND b.status='active'
+          AND (? IS NULL OR (CASE WHEN c.a=? THEN b.public_key ELSE a.public_key END)=?)
+        RETURNING *`,mid,userId,type,type==='text'?nonce:null,type==='text'?ciphertext:null,now,expiresAt,preview?.nonce??null,preview?.ciphertext??null,
+        id,userId,userId,recipientPublicKey??null,userId,recipientPublicKey??null);
+      const cmds=[stmt('SELECT COALESCE(MAX(seq),0) AS seq FROM realtime_journal'),insert];
+      if(type==='image')cmds.push(stmt(`INSERT INTO image_payloads(message_id,nonce,ciphertext)
+        SELECT ?,?,? WHERE EXISTS(SELECT 1 FROM messages WHERE id=? AND conversation_id=? AND sender_id=? AND type='image')`,mid,nonce,ciphertext,mid,id,userId));
+      let results;
+      try {results=await db.batch(cmds);} catch(error) {
         if(String(error).includes('UNIQUE'))fail(409,'消息已存在，不能重复发送。');
         if(String(error).includes('STORAGE_CAP'))fail(507,'云端实验站存储达到上限，请先清理。'); throw error;
       }
-      return finish(json({ok:true,id:mid},201));
+      before=results?.[0]?.results?.[0]?.seq;
+      const saved=results?.[1]?.results?.[0];
+      if(!saved)fail(409,'对方身份或会话已变化，请先同步后重试。');
+      return finish(json({ok:true,id:mid,message:envelope(saved)},201));
     }
   }
-  const mm=/^\/api\/messages\/([^/]+)(\/open)?$/.exec(path);
+  const mm=/^\/api\/messages\/([^/]+)(\/open|\/sent-image)?$/.exec(path);
   if(mm) {
     const m=await message(mm[1]);
     if(!mm[2] && method==='DELETE') {await stmt('DELETE FROM messages WHERE id=?',m.id).run();return finish(json({ok:true}));}
-    if(mm[2] && method==='POST') {
+    if(mm[2]==='/sent-image' && method==='GET') {
+      if(m.sender_id!==userId)fail(403,'只有发送方可以查看发送中的图片。');
+      if(m.type!=='image')fail(404,'阅后图片不存在。');
+      const payload=await first(`SELECT p.nonce,p.ciphertext FROM image_payloads p
+        JOIN messages live ON live.id=p.message_id JOIN conversations c ON c.id=live.conversation_id
+        JOIN users a ON a.id=c.a JOIN users b ON b.id=c.b
+        WHERE live.id=? AND live.type='image' AND live.sender_id=? AND (c.a=? OR c.b=?)
+          AND live.expires_at>? AND live.consumed_at IS NULL AND c.archived_at IS NULL
+          AND live.seq>c.history_from_seq AND a.status='active' AND b.status='active'`,m.id,userId,userId,userId,Date.now());
+      if(!payload)fail(410,'图片已查看、过期或删除。');
+      return json({...envelope(m),preview:null,nonce:payload.nonce,ciphertext:payload.ciphertext});
+    }
+    if(mm[2]==='/open' && method==='POST') {
       if(m.type!=='image'||m.sender_id===userId)fail(403,'只有接收方可以打开阅后图片。');
       const payload=await first("DELETE FROM image_payloads WHERE message_id=? AND EXISTS (SELECT 1 FROM messages m JOIN conversations c ON c.id=m.conversation_id JOIN users a ON a.id=c.a JOIN users b ON b.id=c.b WHERE m.id=image_payloads.message_id AND (c.a=? OR c.b=?) AND m.sender_id<>? AND m.expires_at>? AND m.consumed_at IS NULL AND c.archived_at IS NULL AND m.seq>c.history_from_seq AND a.status='active' AND b.status='active') RETURNING nonce,ciphertext",m.id,userId,userId,userId,Date.now());
       if(!payload)fail(410,'图片已经被打开、过期或删除。');

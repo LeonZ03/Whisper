@@ -16,7 +16,7 @@ const envelope = (id, seq, type = 'text') => ({ id, seq, type, conversationId: c
 const response = (extra = {}) => ({ version: 1, cursor: 10, reset: false, more: false, conversationId: conversation.id,
   conversations: [], removedConversations: [], messages: [], removed: [], serverTime: Date.now(), ...extra });
 
-async function fixture(page) {
+async function fixture(page, { acknowledge = false } = {}) {
   const requests = [], queued = [], uploads = [];
   let snapshot = [], gate = null, sendGate = null;
   await page.addInitScript(() => {
@@ -35,7 +35,7 @@ async function fixture(page) {
       else if (route.request().method() === 'POST' && path.endsWith('/messages')) {
         const sent = route.request().postDataJSON(); uploads.push(sent);
         if (sendGate) { const current = sendGate; sendGate = null; await current.promise; status = current.status; }
-        value = status === 200 ? {} : { error: '隔离测试发送拒绝' };
+        value = status === 200 ? (acknowledge ? {message:{...sent,seq:uploads.length}} : {}) : { error: '隔离测试发送拒绝' };
         if (status === 200) snapshot.push({ ...sent, seq: uploads.length });
       }
       else if (path === '/api/realtime/ticket') value = { ticket: 'T'.repeat(43), expiresAt: Date.now() + 60_000 };
@@ -68,6 +68,30 @@ loadEarlier:items=>{messages=[...items,...messages];renderMessages()}};`;
     holdSend: (status = 200) => { let release; sendGate = { status, promise: new Promise(resolve => { release = resolve; }) }; return release; },
     hold: (result, status = 200) => { let release; gate = { result, status, promise: new Promise(resolve => { release = resolve; }) }; return release; } };
 }
+
+test('commit receipt displays the sent message without an additional sync request', async ({ page }) => {
+  const f = await fixture(page,{acknowledge:true}); await page.evaluate(c => realtimeTest.selectConversation(c),conversation);
+  const before = f.requests.filter(path => path.startsWith('/api/sync')).length;
+  await page.locator('#message-input').fill('提交回执立即显示'); await page.locator('#send').click();
+  await expect(page.locator('.message.own:not(.sending-preview) .bubble')).toHaveText('提交回执立即显示');
+  await expect(page.locator('.sending-preview')).toHaveCount(0);
+  expect(f.requests.filter(path => path.startsWith('/api/sync')).length).toBe(before);
+});
+
+test('a delayed commit receipt cannot resurrect a message removed by a newer synchronization', async ({ page }) => {
+  const f = await fixture(page); await page.evaluate(c => realtimeTest.selectConversation(c),conversation);
+  let release, started, sent;
+  const gate = new Promise(resolve => { release=resolve; }), uploaded = new Promise(resolve => { started=resolve; });
+  await page.route('**/api/conversations/*/messages',async route => {
+    sent={...route.request().postDataJSON(),seq:1}; started(); await gate;
+    await route.fulfill({status:201,contentType:'application/json',body:JSON.stringify({message:sent})});
+  });
+  await page.locator('#message-input').fill('删除后不能复活'); await page.locator('#send').click(); await uploaded;
+  f.queued.push(response({cursor:11,removed:[sent.id]})); await page.evaluate(() => realtimeTest.sync());
+  await expect(page.locator('.sending-preview')).toHaveCount(0); release();
+  await expect.poll(() => f.requests.filter(path => path.startsWith('/api/sync')).length).toBeGreaterThan(2);
+  await expect(page.locator('.message .bubble')).toHaveCount(0);
+});
 
 test('submit clears the composer immediately; queued uploads are ordered and do not overwrite the next draft', async ({ page }) => {
   const f = await fixture(page); await page.evaluate(c => realtimeTest.selectConversation(c), conversation);

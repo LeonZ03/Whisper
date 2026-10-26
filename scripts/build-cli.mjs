@@ -5,6 +5,8 @@ import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 const root = fileURLToPath(new URL('../', import.meta.url));
+mkdirSync(join(root,'public/cli'),{recursive:true});
+for(const n of ['bootstrap.ps1','bootstrap.sh'])cpSync(join(root,'client-distribution',n),join(root,'public/cli',n));
 const hash = (file) => createHash('sha256').update(readFileSync(file)).digest('hex');
 if (process.platform !== 'win32' || process.arch !== 'x64') throw new Error('Build on Windows x64 with Node.js 24+.');
 if (Number(process.versions.node.split('.')[0]) < 24) throw new Error('Node.js 24+ required.');

@@ -31,11 +31,33 @@ export function linuxInstallCommand(value, release) {
     `case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) export PATH="$HOME/.local/bin:$PATH" ;; esac; ` +
     `else local rc=$?; return "$rc"; fi; }; whisper_install`;
 }
+function validOrigin(value, hash) {
+  const u = new URL(value);
+  if (u.username || u.password || u.search || u.hash || u.pathname !== '/' ||
+      !(u.protocol === 'https:' || (u.protocol === 'http:' && ['127.0.0.1', 'localhost', '[::1]'].includes(u.hostname)))) throw new Error('Invalid installation origin');
+  if (hash && !/^[a-f0-9]{64}$/.test(hash)) throw new Error('Invalid installer hash');
+  return u.origin;
+}
+export function windowsBootstrapCommand(value) {
+  const origin = validOrigin(value);
+  if (origin === 'https://whisper.leonz03.dpdns.org') {
+    return `irm -MaximumRedirection 0 '${origin}/cli/bootstrap.ps1' | iex`;
+  }
+  return `& ([scriptblock]::Create((irm -MaximumRedirection 0 '${origin}/cli/bootstrap.ps1'))) -Server '${origin}'`;
+}
+export function linuxBootstrapCommand(value) {
+  const origin = validOrigin(value);
+  const remote = `'${origin}/cli/bootstrap.sh'`;
+  const serverArg = origin === 'https://whisper.leonz03.dpdns.org' ? '' : ` --server '${origin}'`;
+  return `( p=$(mktemp) && trap 'rm -f -- "$p"' EXIT && curl -q -fsSL --max-redirs 0 --max-time 45 -o "$p" ${remote} && bash "$p"${serverArg} )`;
+}
 export function cliInstructions(server, release, linuxRelease) {
-  return `CLI 首次安装 / 更新（Windows x64，朋友在自己的 PowerShell 执行）：\n${installCommand(server, release)}\n\n` +
+  return `CLI 首次安装 / 更新（Windows x64，短命令，在 PowerShell 执行）：\n${windowsBootstrapCommand(server)}\n\n` +
+    `可选：长版安装命令直接固定安装脚本 SHA-256：\n${installCommand(server, release)}\n\n` +
     (linuxRelease
-      ? `CLI 首次安装 / 更新（Linux x64 / ARM64，朋友在自己的 Bash 执行）：\n${linuxInstallCommand(server, linuxRelease)}\n\n`
+      ? `CLI 首次安装 / 更新（Linux x64 / ARM64，短命令，在 Bash 执行）：\n${linuxBootstrapCommand(server)}\n安装后请打开新终端，再运行 whisper。\n\n` +
+        `可选：Linux 长版安装命令直接固定安装脚本 SHA-256：\n${linuxInstallCommand(server, linuxRelease)}\n\n`
       : 'Linux 首次安装 / 更新：请从安装帮助页复制当前 Linux 命令。\n\n') +
     `CLI 连接（已经安装，无需再次下载）：\nwhisper --server '${new URL(server).origin}'\n\n` +
-    `默认连接：whisper\n卸载：whisper --uninstall\n安装帮助：${new URL(server).origin}/cli\n`;
+    `默认连接：whisper\n卸载：whisper uninstall（兼容：whisper --uninstall）\n安装帮助：${new URL(server).origin}/cli\n`;
 }

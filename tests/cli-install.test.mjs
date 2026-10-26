@@ -9,7 +9,7 @@ import { pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
 import { unzipSync, zipSync, strToU8 } from 'fflate';
 import { createWhisperServer } from '../server/app.mjs';
-import { installCommand } from '../public/cli-command.mjs';
+import { installCommand, windowsBootstrapCommand } from '../public/cli-command.mjs';
 const shell = join(process.env.SystemRoot, 'System32/WindowsPowerShell/v1.0/powershell.exe');
 const windowsPowerShellModules = join(process.env.SystemRoot, 'System32/WindowsPowerShell/v1.0/Modules');
 const release = JSON.parse(readFileSync('public/downloads/manifest.json'));
@@ -19,6 +19,7 @@ function run(exe, args, options = {}) {
     const spawnOptions = { cwd: resolve('.'), windowsHide: true, ...options };
     if (exe === shell) spawnOptions.env = { ...(options.env || process.env), PSModulePath: windowsPowerShellModules };
     const p = spawn(exe, args, spawnOptions); let out = '';
+    if (options.input !== undefined) p.stdin?.end(options.input);
     p.stdout?.on('data', (b) => { out += b; }); p.stderr?.on('data', (b) => { out += b; });
     const timer = setTimeout(() => { p.kill(); reject(new Error('child timeout')); }, 180000);
     p.on('error', (e) => { clearTimeout(timer); reject(e); });
@@ -31,6 +32,39 @@ test('installation command rejects insecure origins and missing hashes', () => {
   const command = installCommand('https://example.com', release);
   assert.ok(command.includes(release.installerSha256)); assert.ok(!command.includes('Invoke-Expression'));
   assert.ok(command.includes('Get-FileHash')); assert.ok(command.includes('-MaximumRedirection 0'));
+});
+test('PowerShell bootstrap bounds same-origin downloads and rejects an installer hash mismatch', { skip: process.platform !== 'win32', timeout: 30000 }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'whisper-bootstrap-test-'));
+  const installerBytes = Buffer.from("Write-Output 'BOOTSTRAP_VERIFIED_INSTALLER_RAN'\n");
+  const installerHash = createHash('sha256').update(installerBytes).digest('hex');
+  const bootstrapBytes = readFileSync('client-distribution/bootstrap.ps1');
+  let installer = installerBytes;
+  const server = createServer((req, res) => {
+    if (req.url === '/cli/bootstrap.ps1') res.end(bootstrapBytes);
+    else if (req.url === '/downloads/manifest.json') {
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ platform: 'windows-x64', installerSha256: installerHash }));
+    } else if (req.url === '/install.ps1') res.end(installer);
+    else { res.statusCode = 404; res.end(); }
+  });
+  await new Promise(resolveServer => server.listen(0, '127.0.0.1', resolveServer));
+  const origin = `http://127.0.0.1:${server.address().port}`;
+  const env = { ...process.env, TEMP: dir, TMP: dir, LOCALAPPDATA: join(dir, 'local') };
+  const command = windowsBootstrapCommand(origin).replace(`'${origin}'`, `'${origin}' -NoPath`);
+  try {
+    const good = await run(shell, ['-NoProfile', '-Command', `${command}; if ($env:Path -notlike '*WhisperCLI\\bin*') { throw 'Current PowerShell PATH was not refreshed.' }`], { env });
+    assert.equal(good.code, 0, good.out);
+    assert.match(good.out, /BOOTSTRAP_VERIFIED_INSTALLER_RAN/);
+    assert.match(good.out, /This PowerShell session can now run whisper/);
+    installer = Buffer.from("Write-Output 'TAMPERED_INSTALLER_RAN'\n");
+    const bad = await run(shell, ['-NoProfile', '-Command', command], { env });
+    assert.notEqual(bad.code, 0);
+    assert.match(bad.out, /Installer hash mismatch/);
+    assert.doesNotMatch(bad.out, /TAMPERED_INSTALLER_RAN/);
+  } finally {
+    await new Promise(resolveServer => server.close(resolveServer));
+    rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  }
 });
 test('PowerShell command install, repeat install, integrity failure, installed CLI chat, uninstall', { timeout: 240000 }, async () => {
   const dir = mkdtempSync(join(tmpdir(), 'whisper-install-test-'));
@@ -51,6 +85,10 @@ test('PowerShell command install, repeat install, integrity failure, installed C
     const marker = JSON.parse(readFileSync(join(home, 'installed.json')));
     assert.equal(marker.pathAdded, false); assert.equal(marker.sha256, release.sha256);
     assert.equal(JSON.parse(readFileSync(join(home, 'settings.json'))).server, app.localUrl);
+    const wrapperText = readFileSync(bin, 'utf8');
+    assert.match(wrapperText, /if \/I "%~1"=="uninstall" "%~dp0\.\.\\uninstall\.cmd"/);
+    assert.match(wrapperText, /if \/I "%~1"=="--uninstall" "%~dp0\.\.\\uninstall\.cmd"/);
+    assert.doesNotMatch(wrapperText, /uninstall.*\bexit\b/);
     const installed = join(home, 'versions', release.sha256, 'Whisper-CLI');
     const applicationURL = pathToFileURL(join(installed, 'cli/application.mjs')).href;
     const entryURL = pathToFileURL(join(installed, 'cli/remote-entry.mjs')).href;
@@ -77,8 +115,11 @@ test('PowerShell command install, repeat install, integrity failure, installed C
     const bad = await run(shell, ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', resolve('public/install.ps1'), '-Server', `http://127.0.0.1:${badServer.address().port}`, '-InstallDir', home, '-NoPath']);
     assert.notEqual(bad.code, 0); assert.match(bad.out, /integrity check failed/); assert.equal(readFileSync(bin, 'utf8'), before);
     assert.doesNotMatch(bad.out, /successful!/);
-    const removed = await run(shell, ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', join(home, 'uninstall.ps1'), '-Yes'], { env });
-    assert.equal(removed.code, 0, removed.out); assert.equal(existsSync(bin), false);
+    const caller = join(dir, 'caller.cmd');
+    writeFileSync(caller, `@echo off\r\ncall "${bin}" uninstall & echo CALLER_ALIVE\r\n`);
+    const removed = await run(join(process.env.SystemRoot, 'System32/cmd.exe'), ['/c', caller], { env, input: 'yes\r\n' });
+    assert.equal(removed.code, 0, removed.out); assert.match(removed.out, /CALLER_ALIVE/, removed.out); assert.equal(existsSync(bin), false, removed.out);
+    assert.equal(existsSync(join(home, 'uninstall.cmd')), true);
     assert.equal(readFileSync(join(home, 'data/cli-pins.json'), 'utf8'), '{}');
     mkdirSync('test-results', { recursive: true });
     writeFileSync('test-results/cli-install.json', JSON.stringify({ passed: true, checkedAt: new Date().toISOString(), userPathMutated: false, currentSessionCommand: true, repeatedInstall: true, checksumFailureBlocked: true, installedTerminalChat: true, uninstallPreservesPins: true }, null, 2));

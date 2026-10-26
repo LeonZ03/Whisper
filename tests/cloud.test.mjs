@@ -52,39 +52,68 @@ test('actual Workers/D1: authentication, E2EE, atomic image claim, cleanup and s
       await f.approve(username);
       await client.authenticate({username,password:'CloudTest26!'});
     }
+    assert.equal(a.supportsRealtime,true); assert.equal(a.supportsSendKeyCheck,true);
     await assert.rejects(again.authenticate({username:'alice_cloud',password:'wrong password'}),e=>e.status===401);
     await again.authenticate({username:'alice_cloud',password:'CloudTest26!'});
     assert.equal(again.user.publicKey,a.user.publicKey);
     await a.chat('bobby_cloud');await b.chat('alice_cloud');
     assert.equal(await a.safety(),await b.safety());
     const probe = '云端测试：明文不进入数据库';
-    const originalRequest = a.request.bind(a);
+    const originalRequest = a.request.bind(a); let sendAck;
     a.request = (path, method, body) => {
       if (method === 'POST' && path.endsWith('/messages')) {
         assert.equal(JSON.stringify(body).includes(probe), false);
         assert.equal(Buffer.from(body.ciphertext, 'base64').includes(Buffer.from(probe)), false);
       }
-      return originalRequest(path, method, body);
+      return originalRequest(path, method, body).then(result => { if(method==='POST'&&path.endsWith('/messages'))sendAck=result; return result; });
     };
     await a.send(probe);await b.sync();
     a.request = originalRequest;
+    assert.equal(sendAck.message.id, sendAck.id); assert.ok(Number.isSafeInteger(sendAck.message.seq));
     assert.equal(b.viewMessages()[0].text,probe);
     const stored=await f.db.prepare('SELECT ciphertext FROM messages').first();
     assert.equal(stored.ciphertext.includes(probe), false);
     assert.equal(Buffer.from(stored.ciphertext, 'base64').includes(Buffer.from(probe)), false);
     await assert.rejects(c.request(`/api/conversations/${a.selected.id}/messages`),e=>e.status===404);
     await assert.rejects(c.request(`/api/conversations/${a.selected.id}/history?beforeSeq=999`),e=>e.status===404);
+    const wrongKey=encryptMessage(a.user,a.selected.peer,a.selected.id,'wrong recipient');
+    wrongKey.recipientPublicKey=c.user.publicKey;
+    const journalBeforeMismatch=(await f.db.prepare('SELECT COALESCE(MAX(seq),0) AS seq FROM realtime_journal').first()).seq;
+    await assert.rejects(a.request(`/api/conversations/${a.selected.id}/messages`,'POST',wrongKey),e=>e.status===409);
+    assert.equal(await f.db.prepare('SELECT 1 FROM messages WHERE id=?').bind(wrongKey.id).first(),null);
+    assert.equal(await f.db.prepare('SELECT 1 FROM image_payloads WHERE message_id=?').bind(wrongKey.id).first(),null);
+    assert.equal((await f.db.prepare('SELECT COALESCE(MAX(seq),0) AS seq FROM realtime_journal').first()).seq,journalBeforeMismatch);
+    const wrongImage=encryptMessage(a.user,a.selected.peer,a.selected.id,'AA==',{type:'image',mime:'image/png'});
+    wrongImage.recipientPublicKey=c.user.publicKey;
+    await assert.rejects(a.request(`/api/conversations/${a.selected.id}/messages`,'POST',wrongImage),e=>e.status===409);
+    assert.equal(await f.db.prepare('SELECT 1 FROM messages WHERE id=?').bind(wrongImage.id).first(),null);
+    assert.equal(await f.db.prepare('SELECT 1 FROM image_payloads WHERE message_id=?').bind(wrongImage.id).first(),null);
+    assert.equal((await f.db.prepare('SELECT COALESCE(MAX(seq),0) AS seq FROM realtime_journal').first()).seq,journalBeforeMismatch);
+    const legacy=encryptMessage(a.user,a.selected.peer,a.selected.id,'legacy envelope');delete legacy.recipientPublicKey;
+    await a.request(`/api/conversations/${a.selected.id}/messages`,'POST',legacy);
+    await a.request(`/api/messages/${legacy.id}`,'DELETE');
     const denied=await fetch(f.url+'/api/conversations',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
     assert.equal(denied.status,403);
     await assert.rejects(a.request('/api/conversations','POST',{username:'bobby_cloud',members:['carol_cloud']}),e=>e.status===400);
     const image=encryptMessage(a.user,a.selected.peer,a.selected.id,'AA==',{type:'image',mime:'image/png'});
     await a.request(`/api/conversations/${a.selected.id}/messages`,'POST',image);
+    const senderCopy=await a.request(`/api/messages/${image.id}/sent-image`);
+    assert.equal(senderCopy.ciphertext,image.ciphertext); assert.equal(senderCopy.consumedAt,null);
+    await assert.rejects(b.request(`/api/messages/${image.id}/sent-image`),e=>e.status===403);
+    await assert.rejects(c.request(`/api/messages/${image.id}/sent-image`),e=>e.status===404);
     await assert.rejects(a.request(`/api/messages/${image.id}/open`,'POST'),e=>e.status===403);
     await assert.rejects(c.request(`/api/messages/${image.id}/open`,'POST'),e=>e.status===404);
+    await assert.rejects(b.request(`/api/messages/${image.id}/sent-image`,'POST'),e=>e.status===404);
+    assert.ok(await f.db.prepare('SELECT 1 FROM image_payloads WHERE message_id=?').bind(image.id).first());
     const claims=await Promise.allSettled(Array.from({length:8},()=>b.request(`/api/messages/${image.id}/open`,'POST')));
     assert.equal(claims.filter(r=>r.status==='fulfilled').length,1);
     assert.equal(await f.db.prepare('SELECT * FROM image_payloads WHERE message_id=?').bind(image.id).first(),null);
     assert.ok((await f.db.prepare('SELECT consumed_at FROM messages WHERE id=?').bind(image.id).first()).consumed_at);
+    await assert.rejects(a.request(`/api/messages/${image.id}/sent-image`),e=>e.status===410);
+    const removedImage=encryptMessage(a.user,a.selected.peer,a.selected.id,'AA==',{type:'image',mime:'image/png'});
+    await a.request(`/api/conversations/${a.selected.id}/messages`,'POST',removedImage);
+    await b.request(`/api/messages/${removedImage.id}`,'DELETE');
+    await assert.rejects(a.request(`/api/messages/${removedImage.id}/sent-image`),e=>e.status===404);
     await a.sync();await a.clear(a.selected.id,Math.max(...a.messages.map(m=>m.seq)));await b.sync();assert.equal(b.messages.length,0);
     const totals=await f.db.prepare('SELECT * FROM storage_totals').first();assert.equal(totals.messages,0);assert.equal(totals.bytes,0);
     const soon=encryptMessage(a.user,a.selected.peer,a.selected.id,'short-lived',{ttlMs:250});
@@ -108,5 +137,6 @@ test('actual Workers/D1: authentication, E2EE, atomic image claim, cleanup and s
       assert.equal(head.status,200);assert.equal(head.headers.get('content-length'),String(release.bytes));
     }
     await again.logout();await assert.rejects(again.request('/api/conversations'),e=>e.status===401);
+    await assert.rejects(again.request(`/api/messages/${image.id}/sent-image`),e=>e.status===401);
   }finally{await Promise.all(clients.map(c=>c.logout().catch(()=>{})));await f.close();}
 });

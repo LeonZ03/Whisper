@@ -225,4 +225,4 @@ else
   echo "Upgrade successful! Whisper CLI v$OLD_VERSION -> v$VERSION."
 fi
 if ((NO_PATH == 1)); then echo "Installed: $BIN_DIR/whisper (NoPath selected; add $BIN_DIR to PATH manually)."; else echo "Installed: $BIN_DIR/whisper. New shells will find whisper on PATH."; fi
-echo 'Run whisper with no arguments to use the saved server. Run whisper --uninstall to remove the CLI and keep local data.'
+echo 'Run whisper with no arguments to use the saved server. Run whisper uninstall to remove the CLI and keep local data.'

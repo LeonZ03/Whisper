@@ -159,13 +159,23 @@ try {
     $bin = Join-Path $homeDir 'bin'; Assert-NoLink $bin
     [void][IO.Directory]::CreateDirectory($bin)
     foreach ($name in @('settings.json','installed.json','uninstall.ps1','bin\whisper.cmd')) { Assert-NoLink (Join-Path $homeDir $name) }
+Assert-NoLink (Join-Path $homeDir 'uninstall.cmd')
+$uninstallLauncher = @'
+@echo off
+setlocal
+if not exist "%~dp0uninstall.ps1" (
+  echo Whisper CLI is already removed. Public-key pins remain in data.
+  exit /b 0
+)
+"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0uninstall.ps1"
+exit /b %errorlevel%
+'@
+Write-Utf8 (Join-Path $homeDir 'uninstall.cmd') ($uninstallLauncher.Replace("`n","`r`n"))
     $wrapper = @'
 @echo off
 setlocal
-if /I "%~1"=="--uninstall" (
-  "%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0..\uninstall.ps1"
-  exit /b
-)
+if /I "%~1"=="uninstall" "%~dp0..\uninstall.cmd"
+if /I "%~1"=="--uninstall" "%~dp0..\uninstall.cmd"
 set "WHISPER_CLI_HOME=%~dp0.."
 if not defined WHISPER_CLI_DATA_DIR set "WHISPER_CLI_DATA_DIR=%~dp0..\data"
 "%~dp0..\versions\RELEASE_HASH\Whisper-CLI\runtime\node.exe" --no-warnings "%~dp0..\versions\RELEASE_HASH\Whisper-CLI\cli\remote-entry.mjs" %*
@@ -194,7 +204,7 @@ exit /b %errorlevel%
     Write-Host "Installed: $bin\whisper.cmd"
     Write-Host 'Start chatting: whisper'
     Write-Host "Connect: whisper --server $Server"
-    Write-Host 'Run whisper with no arguments to use the saved server. --uninstall removes the app, keeping public-key pins.'
+    Write-Host 'Run whisper with no arguments to use the saved server. Use whisper uninstall to remove the app and keep public-key pins.'
     Write-Host 'Existing PowerShell sessions need a PATH refresh; the host-provided command does this automatically.'
     Write-Host 'Client and runtime only. No server, administrator rights, global Node.js or global policy changes.'
     Write-Host 'Only install from a host you trust. SHA-256 is an integrity check, not a publisher signature.'

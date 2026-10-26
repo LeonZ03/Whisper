@@ -1,8 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
+import { createServer } from 'node:http';
+import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { createHash } from 'node:crypto';
-import { cliInstructions, linuxInstallCommand, installCommand } from '../public/cli-command.mjs';
+import { cliInstructions, linuxInstallCommand, installCommand, windowsBootstrapCommand, linuxBootstrapCommand } from '../public/cli-command.mjs';
 
 const release = { installerSha256: 'a'.repeat(64) };
 
@@ -33,12 +37,104 @@ test('existing PowerShell install command remains available unchanged', () => {
   assert.match(command, /a{64}/);
 });
 
+test('published instructions prefer the simple uninstall verb and retain the legacy alias', () => {
+  const instructions = cliInstructions('https://whisper.example/', release);
+  assert.match(instructions, /whisper uninstall/);
+  assert.match(instructions, /whisper --uninstall/);
+});
+
+test('short bootstrap commands use same-origin HTTPS helpers and retain long hash-pinned commands', () => {
+  const windows = windowsBootstrapCommand('https://whisper.leonz03.dpdns.org/');
+  assert.equal(windows, "irm -MaximumRedirection 0 'https://whisper.leonz03.dpdns.org/cli/bootstrap.ps1' | iex");
+  assert.doesNotMatch(windows, /-Server/);
+  assert.ok(windows.length < 150, `Windows command is ${windows.length} characters`);
+  const localWindows = windowsBootstrapCommand('http://127.0.0.1:8787/');
+  assert.match(localWindows, /-Server/);
+  const sampleWindows = windowsBootstrapCommand('https://whisper.example/');
+  assert.match(sampleWindows, /irm -MaximumRedirection 0/);
+  assert.match(sampleWindows, /https:\/\/whisper\.example\/cli\/bootstrap\.ps1/);
+  const linux = linuxBootstrapCommand('https://whisper.example/');
+  assert.match(linux, /\/cli\/bootstrap\.sh/);
+  assert.match(linux, /curl -q -fsSL.*--max-redirs 0/);
+  assert.match(linux, /^\( p=\$\(mktemp\) && trap 'rm -f -- "\$p"' EXIT/);
+  assert.match(linux, /-o "\$p"/);
+  assert.ok(linux.indexOf('-o "$p"') < linux.indexOf('bash "$p"'));
+  assert.doesNotMatch(linux, /<\(/);
+  const formalLinux = linuxBootstrapCommand('https://whisper.leonz03.dpdns.org/');
+  assert.match(formalLinux, /curl -q -fsSL/);
+  assert.doesNotMatch(formalLinux, /--server/);
+  assert.ok(formalLinux.length < 210, `Linux command is ${formalLinux.length} characters`);
+  assert.ok(linux.length < 260, `Linux command is ${linux.length} characters`);
+  const windowsBootstrap = readFileSync('client-distribution/bootstrap.ps1', 'utf8');
+  assert.match(windowsBootstrap, /AllowAutoRedirect = \$false/);
+  assert.match(windowsBootstrap, /32768/);
+  assert.match(windowsBootstrap, /262144/);
+  assert.match(windowsBootstrap, /Installer hash mismatch/);
+  const linuxBootstrap = readFileSync('client-distribution/bootstrap.sh', 'utf8');
+  assert.match(linuxBootstrap, /--max-redirs 0/);
+  assert.match(linuxBootstrap, /--max-filesize 32768/);
+  assert.match(linuxBootstrap, /Installer hash mismatch/);
+  const instructions = cliInstructions('https://whisper.example/', release, { installerSha256: 'b'.repeat(64) });
+  assert.match(instructions, /短命令/);
+  assert.match(instructions, /可选：长版/);
+  assert.match(instructions, /a{64}/);
+  assert.match(instructions, /b{64}/);
+});
+
+test('Linux HTTPS bootstrap bounds manifest and installer, verifies installer hash before execution', { skip: process.platform !== 'linux', timeout: 30000 }, async () => {
+  const temp = mkdtempSync(join(tmpdir(), 'whisper-bootstrap-check-'));
+  const goodInstaller = Buffer.from('#!/usr/bin/env bash\necho BOOTSTRAP_INSTALLER_RAN\n');
+  const hash = createHash('sha256').update(goodInstaller).digest('hex');
+  let installer = goodInstaller;
+  let failManifest = false;
+  const server = createServer((req, res) => {
+    if (failManifest && req.url === '/downloads/manifest-linux-x64.json') { res.statusCode = 503; res.end('unavailable'); return; }
+    if (req.url === '/downloads/manifest-linux-x64.json') {
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ platform: 'linux-x64', installerSha256: hash }, null, 2));
+    } else if (req.url === '/install.sh') res.end(installer);
+    else { res.statusCode = 404; res.end(); }
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const origin = `http://127.0.0.1:${server.address().port}`;
+  const run = () => new Promise((resolve, reject) => {
+    const child = spawn('bash', ['client-distribution/bootstrap.sh', '--server', origin], {
+      cwd: process.cwd(), env: { ...process.env, HOME: temp, TMPDIR: temp, NO_PROXY: '*', no_proxy: '*' }, stdio: ['ignore', 'pipe', 'pipe']
+    });
+    let stdout = ''; let stderr = '';
+    child.stdout.setEncoding('utf8').on('data', value => { stdout += value; });
+    child.stderr.setEncoding('utf8').on('data', value => { stderr += value; });
+    const timer = setTimeout(() => { child.kill(); reject(new Error(`Linux bootstrap timed out. stdout=${stdout}\nstderr=${stderr}`)); }, 20000);
+    child.on('error', error => { clearTimeout(timer); reject(error); });
+    child.on('close', status => { clearTimeout(timer); resolve({ status, stdout, stderr }); });
+  });
+  try {
+    const good = await run();
+    assert.equal(good.status, 0, good.stderr || good.stdout);
+    assert.match(good.stdout, /BOOTSTRAP_INSTALLER_RAN/);
+    assert.doesNotMatch(good.stdout, /\b\d+%/);
+    installer = Buffer.from('#!/usr/bin/env bash\necho TAMPERED\n');
+    const bad = await run();
+    assert.notEqual(bad.status, 0);
+    assert.match(bad.stderr, /Installer hash mismatch/);
+    assert.doesNotMatch(bad.stdout, /TAMPERED/);
+    failManifest = true;
+    const failedDownload = await run();
+    assert.notEqual(failedDownload.status, 0);
+    assert.doesNotMatch(failedDownload.stdout, /BOOTSTRAP_INSTALLER_RAN|TAMPERED/);
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+    rmSync(temp, { recursive: true, force: true });
+  }
+});
+
 test('launcher instructions require the Linux manifest instead of reusing the Windows installer hash', () => {
   const withoutLinuxRelease = cliInstructions('https://whisper.example/', release);
   assert.match(withoutLinuxRelease, /Linux 首次安装 \/ 更新：请从安装帮助页复制/);
   assert.doesNotMatch(withoutLinuxRelease, /whisper_install\(\)/);
   const linuxRelease = { installerSha256: 'b'.repeat(64) };
   const withLinuxRelease = cliInstructions('https://whisper.example/', release, linuxRelease);
+  assert.match(withLinuxRelease, /\/cli\/bootstrap\.sh/);
   assert.match(withLinuxRelease, /whisper_install\(\)/);
   assert.match(withLinuxRelease, /b{64}/);
   assert.doesNotMatch(withLinuxRelease.slice(withLinuxRelease.indexOf('whisper_install()')), /a{64}/);

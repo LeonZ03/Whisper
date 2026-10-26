@@ -1,8 +1,10 @@
 # Whisper CLI：安装与聊天
 
-当前源码版本为 0.6.3；已安装版本以 `whisper --version` 为准。正式服务与发布包状态见 [部署手册](cloud/DEPLOYMENT.md)。
+当前源码版本为 0.6.4；已安装版本以 `whisper --version` 为准。正式服务与发布包状态见 [部署手册](cloud/DEPLOYMENT.md)。
 
 0.6.3 网页与 Android 支持闪图马赛克预览；Windows / Linux CLI 继续通过 `/web` 引导到网页，不领取、解密显示或保存图片。现有安全码、身份、公钥固定和受保护登录继续使用，正常执行 `whisper update` 更新。
+
+0.6.4 支持短安装入口和 `whisper uninstall`。已同步的实时会话在服务端原子校验收件公钥后省去发送前同步；旧服务保持原检查，发生身份冲突会同步并提示，不自动重发。
 
 ## 后续更新
 
@@ -20,14 +22,14 @@
 
 ## 朋友：首次安装
 
-Windows x64 用户在自己的 PowerShell 中执行服务提供者启动窗口里的完整安装命令。Linux x64 / ARM64 用户从网站首页点击“CLI 安装与使用”，进入 `/cli` 选择 Linux，将安装命令复制到 Bash 执行；Windows 命令也在该页面提供。本机服务提供者需要先运行 `npm run build:cli:linux` 准备 Linux 载荷，正式云端构建会同时准备两个平台。
+Windows x64 用户在自己的 PowerShell 中执行服务提供者启动窗口里的短安装命令。Linux x64 / ARM64 用户从网站首页点击“CLI 安装与使用”，进入 `/cli` 选择 Linux，将短安装命令复制到 Bash 执行；Windows 命令也在该页面提供。本机服务提供者需要先运行 `npm run build:cli:linux` 准备 Linux 载荷，正式云端构建会同时准备两个平台。
 安装载荷包含对应平台的 Node.js 运行时；Linux 只需 Bash、curl、tar 和 sha256sum，不需要全局 Node.js、npm、Git 或管理员权限。
-Linux 命令将 `/install.sh` 下载到临时文件，校验页面提供的 SHA-256 后才交给 Bash；安装器自动识别 x64 / ARM64，下载并校验对应客户端。安装到 `~/.local/share/WhisperCLI`，命令入口位于 `~/.local/bin/whisper`。安装完成后当前 Bash 会刷新 PATH；若 `~/.local/bin` 不在 PATH，请将 `export PATH="$HOME/.local/bin:$PATH"` 加入 shell 配置，或重新打开终端。
+短命令通过 HTTPS 下载 `/cli/bootstrap.sh` 到临时文件，下载成功才运行。Bootstrap 有界读取对应平台的发布清单及 `/install.sh`，核对清单中的安装脚本 SHA-256 后才运行它；既有安装器仍校验客户端归档 SHA-256 和文件清单。安装帮助页也提供原长命令：该命令将安装脚本 SHA-256 固定在命令本身，适合希望额外核对安装脚本版本的用户。安装器自动识别 x64 / ARM64，下载并校验对应客户端。安装到 `~/.local/share/WhisperCLI`，命令入口位于 `~/.local/bin/whisper`。这是当前 Linux 用户的目录；不同用户拥有独立程序、配置、密钥环和 PATH。安装后请打开新终端再运行 `whisper`，或手动将 `~/.local/bin` 加入当前 shell 的 PATH。
 Linux 支持 glibc 2.28 及以上的常见发行版。ARM64 发布包的实测状态以版本验收为准。
-Windows 命令会下载脚本、核对脚本 SHA-256，在独立 PowerShell 进程中运行，然后下载、校验和安装客户端。
+Windows 短命令通过 PowerShell 读取并执行同源 `/cli/bootstrap.ps1`。Bootstrap 有界读取发布清单及 `/install.ps1`，核对清单中的安装脚本 SHA-256 后才运行它；既有安装器仍校验客户端归档 SHA-256 和解压文件清单。安装帮助页同时保留原长命令，直接把安装脚本 SHA-256 固定在 PowerShell 命令里。安装成功后 bootstrap 会刷新当前 PowerShell 的 PATH；失败时报告错误，不关闭用户 shell。
 执行后先提示下载安装器，再依次显示五个阶段：检查版本、下载、校验、解压校验文件、启用安装；下载按实际字节显示百分比与大小，进度条最多每半秒刷新一次，直连重试时显示 curl 下载进度。
 全部步骤成功后用英文明确显示结果：首次安装为 `Installation successful!`；从旧版本升级为 `Upgrade successful!`，并列出旧版本和新版本；同版本重复安装为 `Reinstallation successful! (Version unchanged)`。版本回退显示 `Version change successful!`，不会误报为升级。失败时不显示成功提示。随后可输入 `whisper` 启动。
-安装到 `%LOCALAPPDATA%\WhisperCLI`，添加当前用户的 `bin` 到用户 PATH，同时刷新当前命令窗口的 PATH。
+安装到 `%LOCALAPPDATA%\WhisperCLI`，添加当前 Windows 用户的 `bin` 到用户 PATH，同时刷新当前命令窗口的 PATH。不同 Windows 用户各自安装在自己的 `%LOCALAPPDATA%`，用户 PATH、DPAPI CurrentUser 登录密文和数据互相隔离；不写入机器级安装位置。
 不要求管理员权限，不全局安装 Node.js/npm，不安装系统服务，不修改机器级或用户级持久执行策略。
 脚本调用的 `-ExecutionPolicy Bypass` 仅用于该子进程；组织策略阻止执行时应遵守组织要求，不关闭防护软件。
 只执行你信任的提供者给出的命令。校验哈希不是独立的发布者签名，不能防止恶意发布者。
@@ -40,7 +42,9 @@ Windows 命令会下载脚本、核对脚本 SHA-256，在独立 PowerShell 进�
 
 ```powershell
 whisper
-# 卸载客户端，默认保留公钥核对记录：
+# 卸载客户端，默认保留本地数据和公钥核对记录：
+whisper uninstall
+# 兼容旧版卸载命令：
 whisper --uninstall
 ```
 安装成功后，在终端输入 `whisper` 即可开始聊天。
@@ -120,7 +124,7 @@ Ctrl+Home 到当前已加载顶部，Ctrl+End 回到最新消息；向上阅读�
 
 本工程内仍可运行 `.\whisper.cmd` 或 `npm.cmd run cli`，默认连接本机服务；这是开发入口，不是朋友的安装流程。
 Windows x64 发布包仍是必要的内部下载载荷，位于 `public/downloads/`，不提交 Git，也不用于备份工程。
-`client-distribution/install.ps1` 是安装脚本源，`public/install.ps1` 是构建产物。
+`client-distribution/install.ps1` / `install.sh` 是安装器源，`public/install.ps1` / `install.sh` 是构建产物。短命令 bootstrap 源在 `client-distribution/bootstrap.ps1` 与 `bootstrap.sh`，正式路径为 `/cli/bootstrap.ps1` 与 `/cli/bootstrap.sh`。
 `public/cli-command.mjs` 同时供启动器和帮助页使用，保证它们生成的命令一致。
 
 ```powershell

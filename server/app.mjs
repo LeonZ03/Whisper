@@ -186,7 +186,7 @@ export async function createWhisperServer(options = {}) {
     try { return (await stretch(secret, salt, 32, { N: 131072, r: 8, p: 1, maxmem: 192 * 1024 * 1024 })).toString('base64'); }
     finally { authBusy--; }
   }
-  app.get('/api/health', (_req, res) => res.json({ ok: true, app: 'Whisper', version, instance, registration: 'approval', passwordPolicy: { min: 1, max: 12 }, capabilities: ['message-history-v1', 'accounts-v2', 'realtime-sync-v1'] }));
+  app.get('/api/health', (_req, res) => res.json({ ok: true, app: 'Whisper', version, instance, registration: 'approval', passwordPolicy: { min: 1, max: 12 }, capabilities: ['message-history-v1', 'accounts-v2', 'realtime-sync-v1', 'send-key-check-v1'] }));
   realtime = localRealtime({ db, originFor, rate });
   function notifySince(before, revalidateAll = false) {
     try {
@@ -266,7 +266,7 @@ export async function createWhisperServer(options = {}) {
   });
   app.post('/api/conversations/:id/messages', auth, (req, res) => {
     const c = conversation(req, req.params.id); rate(req, `send:${req.userId}`, 90);
-    const { id, type, nonce, ciphertext, expiresAt, preview } = req.body;
+    const { id, type, nonce, ciphertext, expiresAt, preview, recipientPublicKey } = req.body;
     if (typeof id !== 'string' || !UUID.test(id) || !['text', 'image'].includes(type)) fail(400, '无效的消息。');
     const now = Date.now();
     if (!Number.isSafeInteger(expiresAt) || expiresAt <= now || expiresAt > now + 7 * DAY + 60_000) fail(400, '消息保留时间必须在 7 天以内。');
@@ -276,16 +276,22 @@ export async function createWhisperServer(options = {}) {
       if (type !== 'image' || typeof preview !== 'object') fail(400, '图片预览无效。');
       base64(preview.nonce, 24); base64(preview.ciphertext, 17, 2048);
     }
+    if (recipientPublicKey != null) base64(recipientPublicKey, 32);
     if (db.prepare('SELECT COUNT(*) AS n FROM messages').get().n >= 10_000) fail(507, '消息数量达到实验站上限，请先清理。');
     const pages = db.prepare('PRAGMA page_count').get().page_count;
     const free = db.prepare('PRAGMA freelist_count').get().freelist_count;
     const pageSize = db.prepare('PRAGMA page_size').get().page_size;
     if ((pages - free) * pageSize + ciphertext.length + (preview?.ciphertext.length || 0) > 512 * 1024 * 1024) fail(507, '存储达到实验站上限，请先清理。');
     try {
-      db.prepare('INSERT INTO messages(id,conversation_id,sender_id,type,nonce,ciphertext,created_at,expires_at,preview_nonce,preview_ciphertext) VALUES(?,?,?,?,?,?,?,?,?,?)')
-        .run(id, c.id, req.userId, type, nonce, ciphertext, now, expiresAt, preview?.nonce ?? null, preview?.ciphertext ?? null);
+      const saved = db.prepare(`INSERT INTO messages(id,conversation_id,sender_id,type,nonce,ciphertext,created_at,expires_at,preview_nonce,preview_ciphertext)
+        SELECT ?,c.id,?,?,?, ?,?,?,?,? FROM conversations c JOIN users a ON a.id=c.a JOIN users b ON b.id=c.b
+        WHERE c.id=? AND (c.a=? OR c.b=?) AND c.archived_at IS NULL AND a.status='active' AND b.status='active'
+          AND (? IS NULL OR (CASE WHEN c.a=? THEN b.public_key ELSE a.public_key END)=?)
+        RETURNING *`).get(id, req.userId, type, nonce, ciphertext, now, expiresAt, preview?.nonce ?? null,
+        preview?.ciphertext ?? null, c.id, req.userId, req.userId, recipientPublicKey ?? null, req.userId, recipientPublicKey ?? null);
+      if (!saved) fail(409, '对方身份或会话已变化，请先同步后重试。');
+      res.status(201).json({ ok: true, id, message: envelope(saved) });
     } catch (error) { if (String(error.message).includes('UNIQUE')) fail(409, '消息已存在，不能重复发送。'); throw error; }
-    res.status(201).json({ ok: true, id });
   });
   app.post('/api/messages/:id/open', auth, (req, res) => {
     const m = message(req, req.params.id);
@@ -295,6 +301,13 @@ export async function createWhisperServer(options = {}) {
     const changed = db.prepare('UPDATE messages SET ciphertext=NULL, nonce=NULL, consumed_at=? WHERE id=? AND consumed_at IS NULL').run(Date.now(), m.id);
     if (changed.changes !== 1) fail(410, '图片已经被打开。');
     res.json(envelope(m, true));
+  });
+  app.get('/api/messages/:id/sent-image', auth, (req, res) => {
+    const m = message(req, req.params.id);
+    if (m.sender_id !== req.userId) fail(403, '只有发送方可以查看发送中的图片。');
+    if (m.type !== 'image') fail(404, '阅后图片不存在。');
+    if (m.consumed_at || !m.ciphertext) fail(410, '图片已查看、过期或删除。');
+    res.json({ ...envelope(m, true), preview: null });
   });
   app.delete('/api/messages/:id', auth, (req, res) => {
     const m = message(req, req.params.id);
@@ -308,7 +321,8 @@ export async function createWhisperServer(options = {}) {
     res.json({ ok: true });
   });
   app.use('/api', (_req, res) => res.status(404).json({ error: '接口不存在。' }));
-  app.use(express.static(resolve(root, 'public'), { etag: false, lastModified: false, dotfiles: 'deny', index: 'index.html', cacheControl: false }));
+  app.use(express.static(resolve(root, 'public'), { etag: false, lastModified: false, dotfiles: 'deny', index: 'index.html', cacheControl: false,
+    setHeaders: (res, path) => { if (['bootstrap.ps1','bootstrap.sh'].some(n => path === resolve(root,'public/cli',n))) res.setHeader('Content-Type','text/plain; charset=utf-8'); } }));
   app.use((_req, res) => res.status(404).send('Not found'));
   app.use((error, _req, res, _next) => {
     const status = error.status || 500;

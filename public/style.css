@@ -49,14 +49,16 @@
 .message-delete svg{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.65;stroke-linecap:round;stroke-linejoin:round}
 .sending-preview .bubble{opacity:.78}.send-failed .message-meta{color:var(--danger)}
 .sending-preview .message-meta .quiet{font-size:11px;padding:3px 7px;min-height:32px}
-.message-retiring{pointer-events:none;user-select:none;justify-content:flex-start;transform-origin:center;animation:message-dissolve 520ms ease-out both}
+.message-retiring{pointer-events:none;user-select:none;justify-content:flex-start;transform-origin:center;animation:message-dissolve 1100ms ease-out both}
 .message-expired-shell,.image-dissolve-shell{position:relative;display:block;flex:none;max-width:100%;width:100%;border:0;padding:0;border-radius:12px;background:#e4ece6;overflow:visible}
 .own .message-expired-shell{background:#dce9df}
-.message-expired-shell::before,.image-dissolve-shell::before{content:"";position:absolute;inset:0;border-radius:inherit;background:inherit;animation:dust-surface 420ms ease-out both}
-.image-dissolve-shell{margin:20px auto 0;max-height:65dvh;max-width:100%;background:transparent;animation:message-dissolve 520ms ease-out both}
+.message-expired-shell::before,.image-dissolve-shell::before{content:"";position:absolute;inset:0;border-radius:inherit;background:inherit;animation:dust-surface 850ms ease-out both}
+.image-dissolve-shell{margin:20px auto 0;max-height:65dvh;max-width:100%;background:transparent;animation:message-dissolve 1100ms ease-out both}
 .message-expired-shell{background:transparent!important}
-.dissolve-particle{position:absolute;display:block;width:var(--dust-size,3px);height:var(--dust-size,3px);border-radius:1px;background:#93ad9d;pointer-events:none;opacity:0;animation:particle-drift 420ms ease-out var(--dust-delay,0ms) both}
-@keyframes message-dissolve{0%,65%{opacity:1}100%{opacity:0}}
+.dissolve-particle{position:absolute;display:block;width:var(--dust-size,3px);height:var(--dust-size,3px);border-radius:1px;background:#93ad9d;pointer-events:none;opacity:0;animation:particle-drift 850ms ease-out var(--dust-delay,0ms) both}
+@keyframes message-dissolve{0%,68%{opacity:1}100%{opacity:0}}
 @keyframes dust-surface{from{opacity:.4;clip-path:inset(0)}to{opacity:0;clip-path:inset(0 0 0 100%)}}
-@keyframes particle-drift{0%{opacity:.75;transform:translate(0,0) scale(1)}100%{opacity:0;transform:translate(var(--dust-x,24px),var(--dust-y,-20px)) scale(.2)}}
+@keyframes particle-drift{0%{opacity:0;transform:translate(0,0) scale(.9)}12%,28%{opacity:.8}65%{opacity:.5}100%{opacity:0;transform:translate(var(--dust-x,24px),var(--dust-y,-20px)) rotate(var(--dust-turn,30deg)) scale(.15)}}
 @media(prefers-reduced-motion:reduce){.message-retiring,.image-dissolve-shell,.dissolve-particle,.message-expired-shell::before,.image-dissolve-shell::before{animation:none!important;transition:none!important}}
+
+.image-upload-status{display:flex;align-items:center;gap:10px;margin:8px 16px;padding:10px 12px;color:var(--green);font-size:14px;background:#eaf2ed;border-radius:10px}.image-upload-status::before{content:"";width:14px;height:14px;flex:none;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;animation:upload-spin .8s linear infinite}@keyframes upload-spin{to{transform:rotate(360deg)}}.sent-image-card .sent-image-preview{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;z-index:-2}.sent-image-card:has(.sent-image-preview) .flash-label,.sent-image-card:has(.sent-image-preview) .flash-note{align-self:flex-start}.sent-image-card{justify-content:flex-end}.sent-image-card .flash-label{font-size:13px}.sent-image-card .flash-note{font-size:11px}@media(prefers-reduced-motion:reduce){.image-upload-status::before{animation:none}}

@@ -33,4 +33,4 @@ foreach ($file in @('bin\whisper.cmd','settings.json','installed.json','uninstal
     $path = Join-Path $homeDir $file
     if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force }
 }
-Write-Host "Whisper CLI removed. Public-key pins kept in $homeDir\data. Unrelated files were not removed."
+Write-Host "Whisper CLI removed. Public-key pins kept in $homeDir\data. The small uninstall.cmd helper remains outside PATH so CMD can finish cleanly. Unrelated files were not removed."

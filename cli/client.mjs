@@ -63,7 +63,7 @@ export class WhisperClient {
     this.fetchImpl = fetchImpl; this.timeoutMs = timeoutMs; this.cookie = '';
     this.user = null; this.selected = null; this.conversations = []; this.messages = [];
     this.loginStore = loginStore; this.persistentLogin = false; this.loginNotice = ''; this.loginEpoch = 0;
-    this.pollIntervalMs = 2000; this.ttl = '24h'; this.connected = false; this.supportsHistory = false; this.supportsRealtime = false; this.hasOlder = false; this.historyComplete = false;
+    this.pollIntervalMs = 2000; this.ttl = '24h'; this.connected = false; this.supportsHistory = false; this.supportsRealtime = false; this.supportsSendKeyCheck = false; this.hasOlder = false; this.historyComplete = false;
     this.syncCursor = null; this.syncConversationId = null; this.syncEpoch = 0; this.syncTask = null; this.syncAgain = false; this.realtime = null; this.historyExpanded = false;
   }
   async request(path, method = 'GET', body, timeoutMs = this.timeoutMs) {
@@ -94,6 +94,7 @@ export class WhisperClient {
     if (result.app !== 'Whisper' || result.ok !== true) throw new Error('这个地址不是兼容的 Whisper 服务。');
     this.supportsHistory = result.capabilities?.includes('message-history-v1') === true;
     this.supportsRealtime = result.capabilities?.includes('realtime-sync-v1') === true;
+    this.supportsSendKeyCheck = result.capabilities?.includes('send-key-check-v1') === true;
     this.pollIntervalMs = result.environment === 'cloud' ? Math.max(2000, Number(result.pollIntervalMs) || 2000) : 2000;
     return result;
   }
@@ -308,12 +309,32 @@ export class WhisperClient {
   async sendPrepared(envelope, context) {
     const current = () => this.user === context.user && this.loginEpoch === context.loginEpoch && this.server === context.server && this.selected?.id === context.conversationId && this.selected.peer.publicKey === context.peerKey;
     if (!current()) throw Object.assign(Error('会话已变化，发送已取消。'), { name: 'AbortError' });
-    // Recheck identity immediately before upload; queued envelopes retain the original recipient.
-    await this.sync(); this.requireChat();
+    // A server that atomically checks the envelope's recipient key can safely
+    // accept a send from the already-synced realtime snapshot without another
+    // round trip. Older servers still need the preflight identity refresh.
+    const trust = this.trust();
+    const alreadySynced = this.supportsRealtime && this.supportsSendKeyCheck &&
+      this.syncConversationId === context.conversationId && Number.isSafeInteger(this.syncCursor) &&
+      envelope.recipientPublicKey === context.peerKey && this.selected.peer.publicKey === context.peerKey && !trust.blocked;
+    if (!alreadySynced) await this.sync();
+    this.requireChat();
     if (!current() || this.trust().blocked) throw Object.assign(Error('会话或对方身份已变化，发送已取消。'), { name: 'AbortError' });
+    if (envelope.recipientPublicKey != null && envelope.recipientPublicKey !== context.peerKey) throw Object.assign(Error('加密收件人已变化，发送已取消。'), { name: 'AbortError' });
     if (envelope.expiresAt <= Date.now()) throw Object.assign(Error('排队的消息已到期，未发送。'), { notSent: true });
     try { await this.request(`/api/conversations/${context.conversationId}/messages`, 'POST', envelope); }
-    catch (error) { if (!error.status) error.message = '发送结果未知：请先 /refresh 核对，勿立即重发以免重复。'; throw error; }
+    catch (error) {
+      if (error.status === 409 && error.message.includes('身份或会话已变化')) {
+        error.notSent = true;
+        try {
+          await this.sync();
+          if (this.selected?.id === context.conversationId && this.trust().blocked) {
+            error.message = '对方公钥变化，已阻止发送与解密。请通过可信渠道核实。';
+            error.name = 'AbortError';
+          }
+        } catch { /* Keep the server's conflict result if reconciliation is unavailable. */ }
+      } else if (!error.status) error.message = '发送结果未知：请先 /refresh 核对，勿立即重发以免重复。';
+      throw error;
+    }
     return envelope.id;
   }
   async send(text, { onPending } = {}) {

@@ -48,7 +48,7 @@ test('Linux real installer: install, upgrade, reinstall, corruption rejection an
     servingArchive=Buffer.from(archive);servingArchive[0]^=1;
     const bad=await run('/bin/bash',installArgs,{env});assert.notEqual(bad.status,0);assert.match(bad.stderr,/verification failed/);assert.doesNotMatch(bad.stdout,/successful!/);
     assert.equal((await run(join(bin,'whisper'),['--help'],{env})).status,0);
-    const removed=await run(join(bin,'whisper'),['--uninstall'],{env,input:'yes\n'});assert.equal(removed.status,0,removed.stderr);
+    const removed=await run(join(bin,'whisper'),['uninstall'],{env,input:'yes\n'});assert.equal(removed.status,0,removed.stderr);
     assert.equal(existsSync(join(install,'versions')),false);assert.equal(existsSync(join(bin,'whisper')),false);
     assert.equal(readFileSync(join(install,'data','public-key-pins.json'),'utf8'),'synthetic-pins');assert.equal(readFileSync(join(install,'data','login.keyring'),'utf8'),'synthetic-ciphertext');
     assert.equal(existsSync(join(home,'.profile')),false);

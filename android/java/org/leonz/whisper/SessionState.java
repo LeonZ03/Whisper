@@ -22,7 +22,7 @@ final class SessionState {
     final SessionVault vault;
     final Handler main = new Handler(Looper.getMainLooper());
     String userId = "", publicKey = "", state = "stopped";
-    long revision, startGeneration, validatedGeneration = -1;
+    long revision, backgroundRevision, startGeneration, validatedGeneration = -1;
     boolean revoked, suppressed, starting, running, stopping, serviceRequested;
     Object connectionOwner;
     private Listener listener;
@@ -42,6 +42,8 @@ final class SessionState {
         try {
             JSONObject value = new JSONObject(); value.put("state", state); value.put("revision", revision);
             value.put("userId", userId); value.put("revoked", revoked); value.put("suppressed", suppressed);
+            value.put("stopping", stopping);
+            value.put("backgroundRevision", backgroundRevision);
             return value.toString();
         } catch (Exception ignored) { return "{}"; }
     }
@@ -50,6 +52,7 @@ final class SessionState {
         main.post(() -> { Listener target; String value; synchronized (this) { target = listener; value = snapshot(); } if (target != null) target.changed(value); });
     }
     synchronized void suppress(boolean value) {
+        if (suppressed != value) backgroundRevision++;
         suppressed = value;
         context.getSharedPreferences("connection", Context.MODE_PRIVATE).edit().putBoolean("suppressed", value).apply();
     }

@@ -160,7 +160,9 @@ test('notification failure leaves committed send successful and delta recovers i
     const [a, b] = await seed(f.db), conversation = await json(f, a, '/api/conversations', 'POST', { username: b.username });
     const before = await json(f, b, `/api/sync?conversationId=${conversation.id}`), sent = message();
     const response = await request(f, a, `/api/conversations/${conversation.id}/messages`, 'POST', sent);
-    assert.equal(response.status, 201); assert.deepEqual(await response.json(), { ok: true, id: sent.id });
+    assert.equal(response.status, 201); const receipt = await response.json();
+    assert.equal(receipt.ok, true); assert.equal(receipt.id, sent.id);
+    assert.equal(receipt.message.id, sent.id); assert.equal(receipt.message.ciphertext, sent.ciphertext);
     assert.ok(await f.db.prepare('SELECT id FROM messages WHERE id=?').bind(sent.id).first());
     const delta = await json(f, b, `/api/sync?conversationId=${conversation.id}&cursor=${before.cursor}`);
     assert.equal(delta.reset, false); assert.deepEqual(delta.messages.map(m => m.id), [sent.id]);

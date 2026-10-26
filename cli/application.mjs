@@ -60,7 +60,7 @@ export class ChatApplication {
       clear(this.chatCache?.body, this.chatCache?.styles);
       this.chatCache?.groups?.forEach((group) => clear(group.body, group.styles));
       for (const preview of this.sendPreviews.values()) if (preview.expiresAt <= now) this.clearSendPreview(preview.id);
-      this.dissolveUntil = now + 600;
+      this.dissolveUntil = now + 1200;
       this.chatCache = null; this.transcript.cache = null;
     });
     this.done = new Promise((resolve) => { this.resolveDone = resolve; });
@@ -168,7 +168,7 @@ export class ChatApplication {
       selfName: c.user?.username, connected: c.connected, securityRole: c.user ? (trust.blocked ? 'error' : trust.verified ? 'success' : 'warning') : null,
       historyKey: `${c.server}:${c.user?.id || ''}:${c.selected?.id || ''}:${c.connected}:${trust.blocked}:${this.overlay ? body[0] : 'chat'}`, startAtTop: Boolean(this.overlay),
       latestSeq: c.messages.at(-1)?.seq || 0, canLoadOlder: !this.overlay && c.hasOlder, historyLoading: this.historyLoading,
-      notice: this.busy && !this.ui.pending ? this.sendPreview?.status || (this.notice === '发送中…' ? this.notice : '正在处理…') : this.dissolveUntil > Date.now() ? `消息已销毁  ${this.dissolveUntil - Date.now() > 300 ? '░ · ░' : '·   ·'}` : this.notice,
+      notice: this.busy && !this.ui.pending ? this.sendPreview?.status || (this.notice === '发送中…' ? this.notice : '正在处理…') : this.dissolveUntil > Date.now() ? `消息已销毁  ${this.dissolveUntil - Date.now() > 800 ? '░ ▒ ░' : this.dissolveUntil - Date.now() > 400 ? '░ · ░' : '·   ·'}` : this.notice,
       noticeRole: this.busy && !this.ui.pending ? 'accent' : this.noticeRole,
       hint: '↑↓ 历史命令 · / 菜单 · Enter 发送 · PgUp 翻阅 · Ctrl+End 底部', prompt: this.busy && !this.ui.pending ? '… ' : '› ' });
     this.outputFocus = null;
@@ -220,7 +220,7 @@ export class ChatApplication {
     const priorIds = this.client.messages.map(m => m.id);
     try {
       await this.client.sync(); this.failures = 0;
-      if (priorIds.some(id => !this.client.messages.some(m => m.id === id))) this.dissolveUntil = Date.now() + 600;
+      if (priorIds.some(id => !this.client.messages.some(m => m.id === id))) this.dissolveUntil = Date.now() + 1200;
       this.nextPoll = Date.now() + (this.client.realtime ? 2_147_483_647 : (this.client.pollIntervalMs || 2000));
       this.ensureRealtime();
       if (this.notice.startsWith('连接中断')) this.notify('已重新连接。', 'success');

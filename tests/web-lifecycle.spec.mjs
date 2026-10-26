@@ -53,7 +53,8 @@ test('expiry scrubs content before the short empty-shell animation, then removes
   expect(await page.evaluate(() => window.erased)).toEqual([{ id: 'secret', text: '', inert: true }]);
   expect(await page.locator('#messages').innerText()).not.toContain('测试内容 secret');
   const dust = await page.locator('.dissolve-particle').count(); expect(dust).toBeGreaterThanOrEqual(24); expect(dust).toBeLessThanOrEqual(96);
-  await page.clock.runFor(600); await expect(page.locator('.message')).toHaveCount(0);
+  await page.clock.runFor(600); await expect(page.locator('.message-retiring')).toHaveCount(1);
+  await page.clock.runFor(650); await expect(page.locator('.message')).toHaveCount(0);
   await expect(page.locator('.messages-empty')).toBeVisible();
 });
 

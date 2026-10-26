@@ -125,6 +125,14 @@ test('Android packaged UI: durable login, devices, encrypted chat, 3-second imag
     await expect(a.page.locator('#nav-my')).toBeVisible();
     await a.page.locator('#nav-my').click(); await expect(a.page.locator('#my-name')).toHaveText('android_alice');
     await expect(a.page.locator('#my-panel [data-app-version]')).toHaveText(`v${version}`);
+    await expect(a.page.locator('#background-connection')).toBeVisible();
+    await expect(a.page.locator('#background-connection')).toHaveAttribute('aria-checked','true');
+    await a.page.locator('#background-connection').click();
+    await expect(a.page.locator('#background-connection')).toHaveAttribute('aria-checked','false');
+    await expect(a.page.locator('#background-connection')).toBeEnabled();
+    await a.page.locator('#background-connection').click();
+    await expect(a.page.locator('#background-connection')).toHaveAttribute('aria-checked','true');
+    await expect(a.page.locator('#background-connection')).toBeEnabled();
     await a.page.locator('#app-update').click();
     expect(await a.page.evaluate(() => globalThis.updateCheckManual)).toBe(true);
     await expect(a.page.locator('#account-sessions')).toContainText('OPPO test');
@@ -231,6 +239,11 @@ test('Android packaged UI: durable login, devices, encrypted chat, 3-second imag
     expect(await b.page.locator('canvas.flash-preview').evaluate(c => Math.max(c.width, c.height))).toBeLessThanOrEqual(8);
     expect(b.requests.some(r => r.path.endsWith('/open'))).toBe(false);
     await b.page.screenshot({ path: 'test-results/android/flash-preview.png' });
+    await expect(a.page.locator('img.sent-image-preview')).toBeVisible();
+    await a.page.getByRole('button',{name:'查看我发送的图片',exact:true}).click();
+    await expect(a.page.locator('#image-dialog')).toBeVisible();
+    expect(app.db.prepare("SELECT consumed_at FROM messages WHERE type='image'").get().consumed_at).toBe(null);
+    await a.page.locator('#close-image').click(); await expect(a.page.locator('#image-dialog')).not.toBeVisible();
     await b.page.getByRole('button', { name: '打开图片', exact: true }).click(); await expect(b.page.locator('#image-dialog')).toBeVisible();
     await b.page.evaluate(() => globalThis.whisperAndroidPause());
     await expect(b.page.locator('#image-dialog')).not.toBeVisible(); await expect(b.page.locator('#view-image')).not.toHaveAttribute('src', /.+/);

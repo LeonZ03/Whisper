@@ -7,7 +7,7 @@ export function remainingLabel(expiresAt, now = Date.now()) {
   return { seconds, text: `剩余 ${days ? days + '天 ' : ''}${pad(Math.floor(rest / 3600))}:${pad(Math.floor(rest / 60) % 60)}:${pad(rest % 60)}` };
 }
 
-const DISSOLVE_MS = 520;
+const DISSOLVE_MS = 1100;
 function addDust(shell, width, height) {
   const columns = Math.max(8, Math.min(16, Math.ceil(width / 18)));
   const rows = Math.max(3, Math.min(6, Math.ceil(height / 12)));
@@ -15,9 +15,10 @@ function addDust(shell, width, height) {
     const particle = document.createElement('i'); particle.className = 'dissolve-particle'; particle.setAttribute('aria-hidden', 'true');
     particle.style.left = `${((i % columns) + .5) / columns * 100}%`;
     particle.style.top = `${(Math.floor(i / columns) + .5) / rows * 100}%`;
-    particle.style.setProperty('--dust-x', `${14 + i * 17 % 38}px`);
-    particle.style.setProperty('--dust-y', `${-12 - i * 13 % 35}px`);
-    particle.style.setProperty('--dust-delay', `${i * 19 % 90}ms`);
+    particle.style.setProperty('--dust-x', `${24 + i * 17 % 68}px`);
+    particle.style.setProperty('--dust-y', `${-18 - i * 13 % 52}px`);
+    particle.style.setProperty('--dust-delay', `${i * 23 % 240}ms`);
+    particle.style.setProperty('--dust-turn', `${i * 37 % 120 - 60}deg`);
     particle.style.setProperty('--dust-size', `${2 + i % 3}px`);
     shell.append(particle);
   }

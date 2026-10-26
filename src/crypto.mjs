@@ -30,7 +30,7 @@ export function encryptMessage(user, peer, conversationId, body, { type = 'text'
   if (mime) payload.mime = mime;
   const nonce = sodium.randombytes_buf(24); const plain = encoder.encode(JSON.stringify(payload));
   const ciphertext = b64(sodium.crypto_box_easy(plain, nonce, unb64(peer.publicKey), user.secretKey)); wipe(plain);
-  return { id, type, nonce: b64(nonce), ciphertext, expiresAt };
+  return { id, type, nonce: b64(nonce), ciphertext, expiresAt, recipientPublicKey: peer.publicKey };
 }
 function decryptPayload(message, user, peer) {
   if (!message.ciphertext || !message.nonce) throw new Error('消息已经清理。');

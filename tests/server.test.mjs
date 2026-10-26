@@ -15,7 +15,8 @@ test('申请审批、认证、CSRF、固定双人权限、密文存储、阅后�
   }
   const registration = (username) => ({ username, authKey: random(32), publicKey: random(32), salt: random(16), passwordLength: 8, vault: { nonce: random(24), ciphertext: random(48) } });
   try {
-    assert.equal((await request('/api/health')).status, 200);
+    const health = await request('/api/health'); assert.equal(health.status, 200);
+    assert.ok(health.data.capabilities.includes('send-key-check-v1'));
     assert.equal((await request('/api/conversations')).status, 401);
     const inputs = ['alice', 'bobby', 'carol'].map(registration); const users = [];
     for (const input of inputs) { const result = await request('/api/auth/register', 'POST', input); assert.equal(result.status, 202); users.push(result); }
@@ -31,15 +32,28 @@ test('申请审批、认证、CSRF、固定双人权限、密文存储、阅后�
     assert.equal((await request('/api/conversations', 'POST', { username: 'bobby', members: ['carol'] }, a.cookie)).status, 400);
     const conv = await request('/api/conversations', 'POST', { username: 'bobby' }, a.cookie); assert.equal(conv.status, 200); const id = conv.data.id;
     assert.equal((await request(`/api/conversations/${id}/messages`, 'GET', undefined, c.cookie)).status, 404);
-    const msg = { id: randomUUID(), type: 'text', nonce: random(24), ciphertext: random(100), expiresAt: Date.now() + 60000 };
-    assert.equal((await request(`/api/conversations/${id}/messages`, 'POST', msg, a.cookie)).status, 201);
+    const msg = { id: randomUUID(), type: 'text', nonce: random(24), ciphertext: random(100), expiresAt: Date.now() + 60000, recipientPublicKey: inputs[1].publicKey };
+    const accepted = await request(`/api/conversations/${id}/messages`, 'POST', msg, a.cookie);
+    assert.equal(accepted.status, 201); assert.equal(accepted.data.message.id, msg.id); assert.ok(Number.isSafeInteger(accepted.data.message.seq));
+    const mismatched = { ...msg, id: randomUUID(), recipientPublicKey: inputs[2].publicKey };
+    assert.equal((await request(`/api/conversations/${id}/messages`, 'POST', mismatched, a.cookie)).status, 409);
+    assert.equal(app.db.prepare('SELECT 1 FROM messages WHERE id=?').get(mismatched.id), undefined);
     assert.equal((await request(`/api/conversations/${id}/messages`, 'POST', msg, a.cookie)).status, 409);
     assert.equal((await request(`/api/conversations/${id}/messages`, 'GET', undefined, b.cookie)).data[0].ciphertext, msg.ciphertext);
     assert.equal((await request(`/api/messages/${msg.id}`, 'DELETE', {}, c.cookie)).status, 404);
     assert.equal((await request(`/api/messages/${msg.id}`, 'DELETE', {}, b.cookie)).status, 200);
     assert.equal((await request(`/api/conversations/${id}/messages`, 'GET', undefined, a.cookie)).data.length, 0);
+    const legacy = { ...msg, id: randomUUID() }; delete legacy.recipientPublicKey;
+    assert.equal((await request(`/api/conversations/${id}/messages`, 'POST', legacy, a.cookie)).status, 201);
+    await request(`/api/messages/${legacy.id}`, 'DELETE', {}, a.cookie);
     const image = { ...msg, id: randomUUID(), type: 'image', ciphertext: random(200), preview: { nonce: random(24), ciphertext: random(180) } };
-    await request(`/api/conversations/${id}/messages`, 'POST', image, a.cookie);
+    const imageAccepted = await request(`/api/conversations/${id}/messages`, 'POST', image, a.cookie);
+    assert.equal(imageAccepted.status, 201);
+    const senderCopy = await request(`/api/messages/${image.id}/sent-image`, 'GET', undefined, a.cookie);
+    assert.equal(senderCopy.status, 200); assert.equal(senderCopy.data.ciphertext, image.ciphertext); assert.equal(senderCopy.data.consumedAt, null);
+    assert.equal((await request(`/api/messages/${image.id}/sent-image`, 'GET', undefined, b.cookie)).status, 403);
+    assert.equal((await request(`/api/messages/${image.id}/sent-image`, 'GET', undefined, c.cookie)).status, 404);
+    assert.equal((await request(`/api/messages/${image.id}/sent-image`, 'POST', {}, b.cookie)).status, 404);
     assert.equal((await request(`/api/conversations/${id}/messages`, 'GET', undefined, b.cookie)).data[0].ciphertext, null);
     assert.deepEqual((await request(`/api/conversations/${id}/messages`, 'GET', undefined, b.cookie)).data[0].preview, image.preview);
     const snapshot = await request(`/api/sync?conversationId=${id}`, 'GET', undefined, b.cookie);
@@ -51,6 +65,11 @@ test('申请审批、认证、CSRF、固定双人权限、密文存储、阅后�
     assert.equal(opens.find((r) => r.status === 200).data.ciphertext, image.ciphertext);
     assert.equal(app.db.prepare('SELECT ciphertext FROM messages WHERE id=?').get(image.id).ciphertext, null);
     assert.equal(app.db.prepare('SELECT preview_ciphertext FROM messages WHERE id=?').get(image.id).preview_ciphertext, null);
+    assert.equal((await request(`/api/messages/${image.id}/sent-image`, 'GET', undefined, a.cookie)).status, 410);
+    const removedImage = { ...image, id: randomUUID() };
+    await request(`/api/conversations/${id}/messages`, 'POST', removedImage, a.cookie);
+    await request(`/api/messages/${removedImage.id}`, 'DELETE', {}, b.cookie);
+    assert.equal((await request(`/api/messages/${removedImage.id}/sent-image`, 'GET', undefined, a.cookie)).status, 404);
     const delta = await request(`/api/sync?conversationId=${id}&cursor=${snapshot.data.cursor}`, 'GET', undefined, b.cookie);
     assert.equal(delta.data.messages[0].preview, null);
     assert.equal((await request(`/api/conversations/${id}/messages`, 'POST', { ...image, id: randomUUID(), preview: { nonce: random(24), ciphertext: random(2049) } }, a.cookie)).status, 400);
@@ -63,5 +82,6 @@ test('申请审批、认证、CSRF、固定双人权限、密文存储、阅后�
     assert.equal((await request('/api/admin/members', 'GET', undefined, a.cookie)).status, 403);
     assert.equal((await request('/api/auth/logout', 'POST', {}, a.cookie)).status, 200);
     assert.equal((await request('/api/conversations', 'GET', undefined, a.cookie)).status, 401);
+    assert.equal((await request(`/api/messages/${image.id}/sent-image`, 'GET', undefined, a.cookie)).status, 401);
   } finally { await app.close(); rmSync(dir, { recursive: true, force: true }); }
 });

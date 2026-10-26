@@ -6,6 +6,8 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
+mkdirSync(join(root,'public/cli'),{recursive:true});
+for(const n of ['bootstrap.ps1','bootstrap.sh'])cpSync(join(root,'client-distribution',n),join(root,'public/cli',n));
 const sha = value => createHash('sha256').update(value).digest('hex');
 const hashFile = path => sha(readFileSync(path));
 const metadata = JSON.parse(readFileSync(join(root, 'cloud/node-runtime-linux.json'), 'utf8'));

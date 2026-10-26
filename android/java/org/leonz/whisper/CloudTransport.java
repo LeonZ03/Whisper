@@ -37,6 +37,7 @@ final class CloudTransport {
             || path.matches("/api/sync(?:\\?(?:conversationId=" + uuid + "(?:&cursor=[0-9]{1,16})?|cursor=[0-9]{1,16}))?")
             || path.matches("/api/auth/salt\\?username=[a-z0-9_]{3,24}") || path.equals("/api/conversations")
             || path.matches("/api/conversations/" + uuid + "/messages")
+            || path.matches("/api/messages/" + uuid + "/sent-image")
             || path.matches("/api/admin/(members|logins)(\\?before=[0-9]+)?");
         if ("POST".equals(method)) return path.matches("/api/auth/(login|logout|register|recover)")
             || path.equals("/api/realtime/ticket")

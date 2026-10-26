@@ -45,3 +45,49 @@ test('failed native startup retries at bounded foreground intervals, never while
   // Suppressed mode may open a foreground-only fallback; it cannot restart the native service.
   t.mock.timers.tick(90001);await flush();assert.equal(starts,3);assert.ok(changes>0);
 });
+
+test('background toggle is awaitable, repeatable, and ignores stale snapshots/events', async t => {
+  let state={userId:'alice',state:'open',revision:1,backgroundRevision:1,revoked:false,suppressed:false,stopping:false};
+  let releaseOld;
+  const bridge={
+    realtimeState:()=>JSON.stringify(state),
+    startRealtime:()=>{if(state.suppressed)state={...state,backgroundRevision:state.backgroundRevision+1};state={...state,suppressed:false,state:'connecting'};},
+    stopRealtime:()=>{if(!state.suppressed)state={...state,backgroundRevision:state.backgroundRevision+1};state={...state,suppressed:true,stopping:true,state:'stopped'};}
+  };
+  const client=new AndroidRealtimeConnection({user:{id:'alice',publicKey:'public'},bridge,onChange:()=>{},onState:()=>{}});
+  t.after(()=>client.stop()); await client.start();
+  const disabling=client.enableBackground(false);
+  assert.equal(typeof disabling?.then,'function');
+  await disabling;
+  assert.equal(client.suppressed,true);
+  // A queued snapshot captured before the user's new intent must not overwrite it.
+  const oldSnapshot=new Promise(resolve=>{ releaseOld=resolve; });
+  const original=client.snapshot.bind(client); let once=true;
+  client.snapshot=()=>{if(once){once=false;return oldSnapshot;} return original();};
+  const enabling=client.enableBackground(true);
+  state={...state,stopping:false};
+  releaseOld(JSON.stringify({userId:'alice',state:'stopped',suppressed:true,stopping:true,backgroundRevision:2,revision:1}));
+  await enabling;
+  assert.equal(client.suppressed,false);
+  globalThis.whisperAndroidRealtimeEvent({userId:'alice',state:'stopped',suppressed:true,stopping:true,backgroundRevision:2,revision:1});
+  assert.equal(client.suppressed,false);
+});
+
+test('reenabling waits for the native stop owner to release its service', async t => {
+  let state={userId:'alice',state:'stopped',revision:0,backgroundRevision:2,revoked:false,suppressed:true,stopping:true};
+  let starts=0;
+  const bridge={
+    realtimeState:()=>JSON.stringify(state),
+    startRealtime:()=>{if(state.stopping){state={...state,suppressed:false,backgroundRevision:state.backgroundRevision+1};return;}
+      starts++;state={...state,state:'connecting',suppressed:false};},
+    stopRealtime:()=>{}
+  };
+  const client=new AndroidRealtimeConnection({user:{id:'alice',publicKey:'public'},bridge,onChange:()=>{},onState:()=>{}});
+  t.after(()=>client.stop()); await client.start();
+  const enabling=client.enableBackground(true);
+  await new Promise(resolve=>setTimeout(resolve,20));
+  state={...state,stopping:false};
+  assert.equal(await enabling,true);
+  assert.equal(starts,1);
+  assert.equal(client.suppressed,false);
+});

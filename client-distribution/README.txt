@@ -6,15 +6,16 @@ Whisper CLI · Windows x64 命令安装载荷
 安装之后：
   whisper                         连接安装时保存的服务器
   whisper --server https://...     使用服务提供者给出的当前 HTTPS 地址
-  whisper --uninstall             卸载程序，保留公钥核对记录
+  whisper uninstall               卸载程序，保留公钥核对记录
+  whisper --uninstall             旧命令仍兼容
 
 进入后 /register 邀请注册，或 /login 登录；/chat 对方用户名 开始聊天。
 输入文字，Enter 发送；/help 帮助；/quit 退出。不会停止提供者的服务。
 临时网址改变只需改 --server，不必重新安装。更新客户端时重新执行最新安装命令。
 
-默认安装目录：%LOCALAPPDATA%\WhisperCLI。
+默认安装目录：%LOCALAPPDATA%\WhisperCLI；每个 Windows 用户各自安装，用户 PATH 和 DPAPI CurrentUser 登录数据彼此隔离。
 用户 PATH 只增加该目录下的 bin，不安装全局 Node.js，不修改机器级执行策略。
-数据目录：%LOCALAPPDATA%\WhisperCLI\data；只保存公钥核对记录，不保存明文、密码或 Cookie。
+数据目录：%LOCALAPPDATA%\WhisperCLI\data；保存本用户的公钥核对记录及受保护登录密文，不保存明文、密码或未保护 Cookie。
 不包含提供者的账号、邀请码、聊天数据库、Cloudflare 凭据或服务端代码。
 
 网页与 CLI 共用账号和会话。图片仍需网页查看；CLI 不领取阅后图片。

@@ -10,6 +10,8 @@ export class AndroidRealtimeConnection {
   constructor({ user, onChange, onState, request, url, bridge = globalThis.WhisperNative }) {
     Object.assign(this, { user, onChange, onState, request, url, bridge });
     this.running = false; this.paused = false; this.epoch = 0; this.revision = -1;
+    this.backgroundIntent = 0; this.pendingBackground = null;
+    this.backgroundRevision = -1; this.backgroundValue = null;
     this.listener = state => this.accept(state);
   }
   async snapshot() {
@@ -29,8 +31,16 @@ export class AndroidRealtimeConnection {
   }
   accept(state, initial = false) {
     if (!this.running || !state || (!initial && state.userId !== this.user.id)) return;
+    // Events/snapshots can be queued across a rapid toggle. During an explicit
+    // user operation, only a native state matching that latest intent is current.
+    if (this.pendingBackground !== null && Boolean(state.suppressed) !== this.pendingBackground) return;
+    const backgroundRevision = Number.isSafeInteger(state.backgroundRevision) ? state.backgroundRevision : 0;
+    if (backgroundRevision < this.backgroundRevision) return;
+    if (this.backgroundValue !== null && backgroundRevision === this.backgroundRevision
+        && Boolean(state.suppressed) !== this.backgroundValue) return;
     if (state.revoked && !initial) { globalThis.whisperAndroidSessionRevoked?.(); return; }
     this.suppressed = Boolean(state.suppressed);
+    this.backgroundRevision = backgroundRevision; this.backgroundValue = this.suppressed;
     this.open = state.state === 'open';
     globalThis.whisperAndroidBackgroundState?.(!this.suppressed);
     if (this.suppressed) {
@@ -81,10 +91,51 @@ export class AndroidRealtimeConnection {
     }
   }
   async enableBackground(enabled) {
-    if (!this.running) return;
-    if (enabled) this.bridge.startRealtime(this.user.id, this.user.publicKey);
-    else this.bridge.stopRealtime();
-    this.accept(await this.snapshot());
+    if (!this.running) return false;
+    const intent = ++this.backgroundIntent;
+    const desired = Boolean(enabled);
+    this.pendingBackground = !desired;
+    globalThis.whisperAndroidBackgroundState?.(desired);
+    if (!desired) {
+      this.bridge.stopRealtime();
+      const state = await this.snapshot();
+      if (intent !== this.backgroundIntent || !this.running) return false;
+      if (state?.suppressed) { this.accept(state); this.pendingBackground = null; return true; }
+      this.pendingBackground = null;
+      globalThis.whisperAndroidBackgroundState?.(!this.suppressed);
+      return false;
+    }
+    // A stop may still be completing in Android. Retry after its owner has
+    // released the service; startRealtime itself synchronously clears the
+    // persisted opt-out, so this loop waits only for lifecycle ownership.
+    for (let attempt = 0; attempt < 100; attempt++) {
+      if (intent !== this.backgroundIntent || !this.running) return false;
+      let state = await this.snapshot();
+      if (intent !== this.backgroundIntent || !this.running) return false;
+      if (state?.userId === this.user.id && state.suppressed) {
+        this.bridge.startRealtime(this.user.id, this.user.publicKey);
+        state = await this.snapshot();
+        if (intent !== this.backgroundIntent || !this.running) return false;
+      } else if (!state || state.userId !== this.user.id) {
+        this.bridge.startRealtime(this.user.id, this.user.publicKey);
+        state = await this.snapshot();
+      } else if (state.stopping || (state.state === 'stopped' && !state.suppressed)) {
+        if (!state.stopping) this.bridge.startRealtime(this.user.id, this.user.publicKey);
+        await new Promise(resolve => setTimeout(resolve, 100));
+        continue;
+      }
+      if (state?.userId === this.user.id && !state.suppressed && !state.stopping) {
+        this.accept(state); this.pendingBackground = null;
+        this.backgroundRevision = Number.isSafeInteger(state.backgroundRevision) ? state.backgroundRevision : this.backgroundRevision;
+        this.backgroundValue = false; return true;
+      }
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    if (intent === this.backgroundIntent) {
+      this.pendingBackground = null;
+      globalThis.whisperAndroidBackgroundState?.(!this.suppressed);
+    }
+    return false;
   }
   stop() {
     this.running = false; this.epoch++; clearTimeout(this.timer); listeners.delete(this.listener);

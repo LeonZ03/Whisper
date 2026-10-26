@@ -13,6 +13,8 @@ const pkg=JSON.parse(readFileSync(join(root,'package.json')));
 let commit=process.env.WORKERS_CI_COMMIT_SHA||process.env.GITHUB_SHA;
 if(!commit)try{commit=execFileSync('git',['rev-parse','HEAD'],{cwd:root,encoding:'utf8'}).trim();}catch{commit='local';}
 rmSync(out,{recursive:true,force:true});mkdirSync(assets,{recursive:true});
+mkdirSync(join(assets,'cli'),{recursive:true});
+for(const n of ['bootstrap.ps1','bootstrap.sh'])writeFileSync(join(assets,'cli',n),readFileSync(join(root,'client-distribution',n)));
 for(const name of ['index.html','style.css','brand-mark.svg','favicon.svg','cli.html','cli-install.css','cli-install.mjs','cli-command.mjs','apk.html','apk-download.css','apk-download.mjs','apk-conversations.svg','apk-chat.svg','apk-account.svg']) {
   writeFileSync(join(assets,name),readFileSync(join(root,'public',name)));
 }
@@ -21,7 +23,7 @@ await build({absWorkingDir:root,entryPoints:['src/app.mjs'],outfile:join(assets,
   define:{__APP_VERSION__:JSON.stringify(pkg.version)}});
 const html=readFileSync(join(assets,'index.html'),'utf8').replace('class="edition">LOCAL','class="edition">CLOUD');
 writeFileSync(join(assets,'index.html'),html);
-writeFileSync(join(assets,'_headers'),'/*\n'+Object.entries({...SECURITY_HEADERS,'Strict-Transport-Security':'max-age=31536000'}).map(([k,v])=>'  '+k+': '+v).join('\n')+'\n');
+writeFileSync(join(assets,'_headers'),'/*\n'+Object.entries({...SECURITY_HEADERS,'Strict-Transport-Security':'max-age=31536000'}).map(([k,v])=>'  '+k+': '+v).join('\n')+'\n'+['bootstrap.ps1','bootstrap.sh'].map(n=>'/cli/'+n+'\n  Content-Type: text/plain; charset=utf-8\n').join(''));
 const files={},dependencies=new Map(),add=(name,value,destination=files)=>{destination[name]=value instanceof Uint8Array?value:strToU8(value);};
 function copy(source,target,destination=files) {
   if(lstatSync(source).isSymbolicLink())throw Error('Symlink in release input');

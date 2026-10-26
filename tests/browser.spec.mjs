@@ -73,9 +73,23 @@ test('两个浏览器真实加密聊天、图片、删除、越权及跨入口�
     await expect(a.locator('.bubble').filter({ hasText: '收到了。' })).toBeVisible({ timeout: 10000 });
     await a.screenshot({ path: 'test-results/chat-desktop.png', fullPage: true });
     const png = await a.evaluate(() => { const canvas = document.createElement('canvas'); canvas.width = 240; canvas.height = 160; const ctx = canvas.getContext('2d'); ctx.fillStyle = '#dce9de'; ctx.fillRect(0, 0, 240, 160); ctx.fillStyle = '#235c51'; ctx.font = '24px sans-serif'; ctx.fillText('Whisper test', 35, 85); return canvas.toDataURL('image/png').split(',')[1]; });
+    let releaseImage; const imageGate = new Promise(resolve => { releaseImage = resolve; });
+    const delayedImage = async route => { if (route.request().method() === 'POST') await imageGate; await route.continue(); };
+    await a.route('**/api/conversations/*/messages',delayedImage);
     await a.locator('#image-input').setInputFiles({ name: 'test.png', mimeType: 'image/png', buffer: Buffer.from(png, 'base64') });
+    await expect(a.locator('#image-upload-status')).toContainText('正在上传');
+    await a.locator('#message-input').fill('图片上传时仍能写下一段');
+    await expect(a.locator('#message-input')).toHaveValue('图片上传时仍能写下一段');
+    const imagePosted = a.waitForResponse(response => response.request().method() === 'POST' && response.url().includes('/api/conversations/'));
+    releaseImage(); await imagePosted; await a.unroute('**/api/conversations/*/messages',delayedImage);
+    await expect(a.locator('#image-upload-status')).toHaveCount(0);
     await expect(b.getByRole('button', { name: '打开图片', exact: true })).toBeVisible({ timeout: 10000 });
-    await expect(a.locator('canvas.flash-preview')).toBeVisible();
+    await expect(a.locator('img.sent-image-preview')).toBeVisible();
+    await a.getByRole('button',{name:'查看我发送的图片',exact:true}).click();
+    await expect(a.locator('#image-dialog')).toBeVisible();
+    await expect(a.locator('#image-countdown')).toContainText('我发送的图片');
+    expect(app.db.prepare("SELECT consumed_at FROM messages WHERE type='image'").get().consumed_at).toBe(null);
+    await a.locator('#close-image').click(); await expect(a.locator('#image-dialog')).not.toBeVisible();
     await expect(b.locator('canvas.flash-preview')).toBeVisible();
     expect(await b.locator('canvas.flash-preview').evaluate(c => Math.max(c.width, c.height))).toBeLessThanOrEqual(8);
     expect(app.db.prepare("SELECT consumed_at FROM messages WHERE type='image'").get().consumed_at).toBe(null);
@@ -87,7 +101,7 @@ test('两个浏览器真实加密聊天、图片、删除、越权及跨入口�
     await expect(b.getByRole('button', { name: '打开图片', exact: true })).toHaveCount(0);
     expect(app.db.prepare("SELECT ciphertext FROM messages WHERE type='image'").get().ciphertext).toBe(null);
     expect(app.db.prepare("SELECT preview_ciphertext FROM messages WHERE type='image'").get().preview_ciphertext).toBe(null);
-    await expect(a.locator('canvas.flash-preview')).toHaveCount(0);
+    await expect(a.locator('img.sent-image-preview')).toHaveCount(0);
     const oversizedPng = await a.evaluate(() => {
       const canvas = document.createElement('canvas'); canvas.width = 2200; canvas.height = 1600;
       const context = canvas.getContext('2d'), pixels = context.createImageData(canvas.width, canvas.height);

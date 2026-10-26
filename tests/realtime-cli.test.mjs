@@ -39,6 +39,100 @@ test('realtime snapshots reset the cursor; incremental updates deduplicate and p
   assert.equal(client.syncCursor, 12);
 });
 
+test('health capability is recorded only when the server advertises atomic recipient-key checks', async () => {
+  const client = new WhisperClient({ server: 'http://127.0.0.1:8787', fetchImpl: async () => Response.json({
+    ok: true, app: 'Whisper', capabilities: ['realtime-sync-v1', 'send-key-check-v1'],
+  }) });
+  await client.health();
+  assert.equal(client.supportsRealtime, true);
+  assert.equal(client.supportsSendKeyCheck, true);
+  client.request = async () => ({ ok: true, app: 'Whisper', capabilities: ['realtime-sync-v1'] });
+  await client.health();
+  assert.equal(client.supportsSendKeyCheck, false);
+});
+
+test('atomic-key realtime sends avoid a preflight per message while retaining one POST each', async () => {
+  const { client } = clientWith([]);
+  client.supportsSendKeyCheck = true;
+  client.syncCursor = 20; client.syncConversationId = 'conversation-1';
+  let syncs = 0; const requests = [];
+  client.sync = async () => { syncs++; };
+  client.request = async (path, method, body) => { requests.push({ path, method, body }); return { ok: true }; };
+  const context = { user: client.user, loginEpoch: client.loginEpoch, server: client.server, conversationId: client.selected.id, peerKey: client.selected.peer.publicKey };
+  for (const id of ['queued-one', 'queued-two']) {
+    await client.sendPrepared({ id, recipientPublicKey: 'peer-key', expiresAt: Date.now() + 60000 }, context);
+  }
+  assert.equal(syncs, 0);
+  assert.deepEqual(requests.map(({ path, method }) => [path, method]), [
+    ['/api/conversations/conversation-1/messages', 'POST'],
+    ['/api/conversations/conversation-1/messages', 'POST'],
+  ]);
+});
+
+test('old servers and unsynced conversations keep the preflight, and changed identity cancels before POST', async () => {
+  const { client } = clientWith([]);
+  let syncs = 0, posts = 0;
+  client.sync = async () => { syncs++; };
+  client.request = async () => { posts++; return { ok: true }; };
+  const context = { user: client.user, loginEpoch: client.loginEpoch, server: client.server, conversationId: client.selected.id, peerKey: 'peer-key' };
+  const envelope = { id: 'old-server-send', recipientPublicKey: 'peer-key', expiresAt: Date.now() + 60000 };
+  await client.sendPrepared(envelope, context);
+  assert.equal(syncs, 1); assert.equal(posts, 1);
+
+  client.supportsRealtime = true; client.supportsSendKeyCheck = true;
+  client.syncCursor = null; client.syncConversationId = client.selected.id;
+  await client.sendPrepared({ ...envelope, id: 'unsynced-send' }, context);
+  assert.equal(syncs, 2); assert.equal(posts, 2);
+
+  client.syncCursor = 21;
+  client.selected = conversation('conversation-1'); client.selected.peer.publicKey = 'new-peer-key';
+  await assert.rejects(client.sendPrepared({ ...envelope, id: 'stale-send' }, context), { name: 'AbortError' });
+  assert.equal(syncs, 2); assert.equal(posts, 2);
+});
+
+test('revoked session rejects the queued send once and clears the local session', async () => {
+  let posts = 0;
+  const client = new WhisperClient({ server: 'http://127.0.0.1:8787', fetchImpl: async (_url, options) => {
+    if (options.method === 'POST') posts++;
+    return Response.json({ error: 'revoked' }, { status: 401 });
+  } });
+  client.user = { id: 'self', username: 'self', publicKey: 'self-key', secretKey: new Uint8Array(32).fill(7) };
+  client.selected = conversation(); client.supportsRealtime = true; client.supportsSendKeyCheck = true;
+  client.syncCursor = 20; client.syncConversationId = client.selected.id; client.cookie = 'whisper_session=revoked';
+  const secretKey = client.user.secretKey;
+  const context = { user: client.user, loginEpoch: client.loginEpoch, server: client.server, conversationId: client.selected.id, peerKey: 'peer-key' };
+  await assert.rejects(client.sendPrepared({ id: 'revoked-queued', recipientPublicKey: 'peer-key', expiresAt: Date.now() + 60000 }, context), { status: 401 });
+  assert.equal(posts, 1);
+  assert.equal(client.user, null); assert.equal(client.cookie, '');
+  assert.ok(secretKey.every((byte) => byte === 0));
+});
+
+test('key conflict reconciles once, preserves the pin warning, and never resends', async () => {
+  const { client } = clientWith([]);
+  client.supportsSendKeyCheck = true; client.syncCursor = 20; client.syncConversationId = client.selected.id;
+  let syncs = 0, posts = 0, blocked = false;
+  client.request = async () => { posts++; const error = new Error('对方身份或会话已变化，请先同步后重试。'); error.status = 409; throw error; };
+  client.sync = async () => { syncs++; client.selected = conversation(); client.selected.peer.publicKey = 'rotated-key'; blocked = true; };
+  client.trust = () => ({ blocked });
+  const context = { user: client.user, loginEpoch: client.loginEpoch, server: client.server, conversationId: client.selected.id, peerKey: 'peer-key' };
+  await assert.rejects(client.sendPrepared({ id: 'key-conflict', recipientPublicKey: 'peer-key', expiresAt: Date.now() + 60000 }, context), error =>
+    error.status === 409 && error.notSent === true && error.name === 'AbortError' && /公钥变化/.test(error.message));
+  assert.equal(syncs, 1); assert.equal(posts, 1);
+});
+
+test('failed conflict reconciliation retains the original 409 without claiming delivery', async () => {
+  const { client } = clientWith([]);
+  client.supportsSendKeyCheck = true; client.syncCursor = 20; client.syncConversationId = client.selected.id;
+  let syncs = 0, posts = 0;
+  const conflict = Object.assign(new Error('对方身份或会话已变化，请先同步后重试。'), { status: 409 });
+  client.request = async () => { posts++; throw conflict; };
+  client.sync = async () => { syncs++; throw new Error('temporarily unavailable'); };
+  const context = { user: client.user, loginEpoch: client.loginEpoch, server: client.server, conversationId: client.selected.id, peerKey: 'peer-key' };
+  await assert.rejects(client.sendPrepared({ id: 'sync-failure', recipientPublicKey: 'peer-key', expiresAt: Date.now() + 60000 }, context), error =>
+    error === conflict && error.status === 409 && error.notSent === true && /身份或会话已变化/.test(error.message));
+  assert.equal(syncs, 1); assert.equal(posts, 1);
+});
+
 test('a response for a conversation that is no longer selected cannot change messages or cursor', async () => {
   let release;
   const client = new WhisperClient({ server: 'http://127.0.0.1:8787' });

@@ -39,13 +39,18 @@ let realtimeSupported = false, realtime = null, syncCursor = null, deltaTask = n
 let suspendedReading = null;
 let androidPaused = false;
 let restoringLogin = false, savedLoginPending = false;
-let cancelImageDissolve = null;
+let cancelImageDissolve = null, viewingOwn = false;
+let appliedSyncVersion = 0, sentImageEpoch = 0;
+const sentImages = new Map();
+let senderImageObserver;
 const messageCards = new Map();
 const sendPreviews = new Map();
 const sendQueue = new SendQueue({
   send: async (message, context) => {
     if (context.user !== self || context.generation !== generation || selected?.id !== context.conversationId || blocked || selected.peer.publicKey !== context.peerKey) throw Object.assign(Error('会话已变化，发送已取消。'), { name: 'AbortError' });
-    await api(`/api/conversations/${context.conversationId}/messages`, 'POST', message);
+    const version = appliedSyncVersion;
+    const result = await api(`/api/conversations/${context.conversationId}/messages`, 'POST', message);
+    context.acknowledged = acceptSentMessage(result, context, version);
   },
   onState: (message, context, state) => {
     if (context.user !== self || context.generation !== generation) return;
@@ -56,10 +61,11 @@ const sendQueue = new SendQueue({
   },
 });
 const lifecycle = new MessageLifecycle($('messages'), (id) => {
+  forgetSentImage(id);
   messageCards.delete(id); messages = messages.filter((m) => m.id !== id);
   if (viewingId === id) closeImage(true);
 });
-function clearMessageView() { sendQueue.cancel(); lifecycle.clear(); messageCards.clear(); for (const preview of sendPreviews.values()) clearTimeout(preview.timer); sendPreviews.clear(); messages = []; signature = ''; }
+function clearMessageView() { clearSentImages(); sendQueue.cancel(); lifecycle.clear(); messageCards.clear(); for (const preview of sendPreviews.values()) clearTimeout(preview.timer); sendPreviews.clear(); messages = []; signature = ''; }
 function suspendMessageView() {
   suspendedReading = { top: $('messages').scrollTop, focused: document.activeElement === $('message-input') };
   const encrypted = messages, shells = [...messageCards];
@@ -320,6 +326,7 @@ function checkTrust() {
   if (!selected || !self) return;
   let pin = pins()[selected.peer.id]; if (!pin) { savePin(selected.peer); pin = pins()[selected.peer.id]; }
   blocked = Boolean(pin && pin.publicKey !== selected.peer.publicKey);
+  if (blocked && sentImages.size) clearSentImages();
   const verified = !blocked && pin?.verified;
   $('trust-notice').className = 'trust-notice' + (blocked ? ' blocked' : verified ? ' verified' : '');
   $('trust-notice').textContent = blocked ? '对方身份公钥发生变化。已阻止发送与解密。请通过可信外部渠道核对新的完整安全码，再明确更新本机信任记录。' : verified ? '已在此浏览器核对安全码。请仍注意终端安全和截图风险。' : '首次会话，请通过可信渠道核对双方安全码；首次自动记住公钥不等于验证身份。';
@@ -352,8 +359,9 @@ async function refreshMessages(prefetched) {
   const result = prefetched ?? await api(`/api/conversations/${current}/messages`);
   if (!self || generation !== epoch || selected?.id !== current) return;
   for (const item of result) removeSendPreview(item.id);
+  appliedSyncVersion++;
   messages = result;
-  if (viewingId && !messages.some((m) => m.id === viewingId)) closeImage();
+  if (viewingId && !messages.some((m) => m.id === viewingId && (!viewingOwn || !m.consumedAt))) closeImage();
   const sig = JSON.stringify(result.map((m) => [m.id, m.consumedAt, m.ciphertext, m.nonce, m.preview, m.expiresAt]));
   if (sig !== signature) { signature = sig; renderMessages(); }
   connection(true);
@@ -383,6 +391,7 @@ async function sync(force = true) {
   } finally { syncing = false; }
 }
 function applyDelta(result) {
+  appliedSyncVersion++;
   const priorList = JSON.stringify(conversations);
   const removedConversations = new Set(result.removedConversations);
   const list = new Map((result.reset ? [] : conversations).map(c => [c.id, c]));
@@ -402,6 +411,7 @@ function applyDelta(result) {
       if (keyChanged) { signature = ''; closeImage(); }
     }
     const removed = new Set(result.removed);
+    for (const id of removed) removeSendPreview(id);
     const merged = new Map((result.reset ? [] : messages).filter(m => !removed.has(m.id)).map(m => [m.id, m]));
     for (const item of result.messages) {
       // Synchronization never receives view-once image payloads.
@@ -409,7 +419,7 @@ function applyDelta(result) {
       removeSendPreview(item.id);
     }
     messages = [...merged.values()].filter(m => m.expiresAt > Date.now()).sort((a, b) => a.seq - b.seq);
-    if (viewingId && !messages.some(m => m.id === viewingId)) closeImage();
+    if (viewingId && !messages.some(m => m.id === viewingId && (!viewingOwn || !m.consumedAt))) closeImage();
     const sig = JSON.stringify(messages.map(m => [m.id, m.consumedAt, m.ciphertext, m.nonce, m.preview, m.expiresAt, blocked]));
     if (signature !== sig) { signature = sig; renderMessages(); }
     if (suspendedReading) {
@@ -453,12 +463,95 @@ function syncDelta() {
   })().finally(() => { deltaTask = null; });
   return deltaTask;
 }
-function scrubPreview(element) { for (const canvas of element.querySelectorAll('canvas')) canvas.width = canvas.height = 0; }
+function acceptSentMessage(result, context, version) {
+  const m = result?.message;
+  if (!m || context.user !== self || context.generation !== generation || selected?.id !== context.conversationId ||
+      m.conversationId !== selected.id || m.senderId !== self.id || !Number.isSafeInteger(m.seq) || m.expiresAt <= Date.now()) return false;
+  // A later synchronization may already have observed removal or image consumption.
+  if (messages.some(item => item.id === m.id)) return true;
+  if (appliedSyncVersion !== version) return false;
+  messages.push(m); messages.sort((a,b) => a.seq - b.seq); removeSendPreview(m.id); signature = ''; renderMessages();
+  return true;
+}
+function forgetSentImage(id) {
+  const entry = sentImages.get(id); if (!entry) return;
+  if (entry.thumbnail) URL.revokeObjectURL(entry.thumbnail);
+  clearTimeout(entry.timer); sentImages.delete(id);
+}
+function clearSentImages() {
+  sentImageEpoch++; senderImageObserver?.disconnect(); senderImageObserver = null;
+  for (const id of sentImages.keys()) forgetSentImage(id);
+  $('image-upload-status')?.remove();
+}
+function cacheSentImage(m, envelope) {
+  if (sentImages.has(m.id)) return sentImages.get(m.id);
+  while (sentImages.size >= 20) forgetSentImage(sentImages.keys().next().value);
+  const entry = { envelope, thumbnail: null, task: null, timer: setTimeout(() => forgetSentImage(m.id), Math.max(0,m.expiresAt-Date.now())) };
+  sentImages.set(m.id, entry); return entry;
+}
+async function senderImage(m) {
+  let entry = sentImages.get(m.id);
+  if (entry?.envelope) return entry.envelope;
+  entry ??= cacheSentImage(m, null);
+  if (entry.task) return entry.task;
+  const epoch = sentImageEpoch, user = self, c = selected?.id, key = selected?.peer.publicKey;
+  entry.task = api('/api/messages/' + m.id + '/sent-image').then(envelope => {
+    if (epoch !== sentImageEpoch || self !== user || selected?.id !== c || selected.peer.publicKey !== key ||
+        androidPaused || webPaused || document.hidden || !messages.some(item => item.id === m.id && !item.consumedAt && item.expiresAt > Date.now())) throw Error('图片已清理。');
+    entry.envelope = envelope; return envelope;
+  }).finally(() => { entry.task = null; });
+  return entry.task;
+}
+async function showSenderThumbnail(m, card) {
+  const epoch = sentImageEpoch, user = self, peer = selected?.peer;
+  try {
+    const envelope = await senderImage(m), entry = sentImages.get(m.id);
+    if (!entry || epoch !== sentImageEpoch || self !== user || !card.isConnected || blocked) return;
+    if (!entry.thumbnail) {
+      const payload = decryptMessage(envelope, user, peer), bytes = unb64(payload.body);
+      let bitmap;
+      try {
+        if (!['image/jpeg','image/png','image/webp','image/gif'].includes(payload.mime)) throw Error('图片格式无效。');
+        bitmap = await createImageBitmap(new Blob([bytes], {type:payload.mime}));
+        const canvas = document.createElement('canvas'), scale = Math.min(1,280/bitmap.width,200/bitmap.height);
+        canvas.width = Math.max(1,Math.round(bitmap.width*scale)); canvas.height = Math.max(1,Math.round(bitmap.height*scale));
+        try {
+          canvas.getContext('2d').drawImage(bitmap,0,0,canvas.width,canvas.height);
+          const blob = await new Promise(resolve => canvas.toBlob(resolve,'image/webp',.65));
+          if (!blob || epoch !== sentImageEpoch || sentImages.get(m.id) !== entry) return;
+          entry.thumbnail = URL.createObjectURL(blob);
+        } finally { canvas.width = canvas.height = 0; }
+      } finally { wipe(bytes); bitmap?.close(); }
+    }
+    if (epoch !== sentImageEpoch || !card.isConnected || self !== user || blocked || !sentImages.has(m.id)) return;
+    if (!card.querySelector('.sent-image-preview')) {
+      const image = document.createElement('img'); image.className = 'sent-image-preview'; image.alt = '我发送的图片预览'; image.src = entry.thumbnail;
+      card.prepend(image);
+    }
+  } catch { if (card.isConnected) card.querySelector('.flash-label').textContent = '我发送的图片 · 点击查看'; }
+}
+function observeSenderImage(m, card) {
+  card.dataset.senderImage = m.id;
+  if (!senderImageObserver) senderImageObserver = new IntersectionObserver(entries => {
+    for (const item of entries) if (item.isIntersecting) {
+      senderImageObserver.unobserve(item.target);
+      const message = messages.find(m => m.id === item.target.dataset.senderImage);
+      if (message && !message.consumedAt) void showSenderThumbnail(message,item.target);
+    }
+  }, {root:$('messages')});
+  senderImageObserver.observe(card);
+}
+function scrubPreview(element) {
+  for (const canvas of element.querySelectorAll('canvas')) canvas.width = canvas.height = 0;
+  for (const image of element.querySelectorAll('img')) image.removeAttribute('src');
+  for (const card of element.querySelectorAll('[data-sender-image]')) senderImageObserver?.unobserve(card);
+}
 function renderMessages() {
   const box = $('messages'); const stick = box.scrollHeight - box.scrollTop - box.clientHeight < 140;
   const oldScroll = box.scrollTop;
   messages = messages.filter((m) => m.expiresAt > Date.now());
   const present = new Set(messages.map(m => m.id));
+  for (const id of sentImages.keys()) if (!messages.some(m => m.id === id && !m.consumedAt)) forgetSentImage(id);
   for (const [id, card] of messageCards) {
     if (!present.has(id) && !lifecycle.entries.has(id)) { scrubPreview(card.element); card.element.replaceChildren(); card.element.remove(); messageCards.delete(id); }
   }
@@ -479,15 +572,16 @@ function renderMessages() {
       bubble.classList.add('image-card');
       if (m.consumedAt) { const title = document.createElement('strong'); title.textContent = '图片已清理'; bubble.append(title); }
       else {
-        const card = document.createElement(own ? 'div' : 'button'); card.className = 'flash-card';
-        if (!own) { card.type = 'button'; card.setAttribute('aria-label', '打开图片'); card.dataset.openImage = m.id; card.onclick = () => openImage(m, card); }
+        const card = document.createElement('button'); card.className = 'flash-card' + (own ? ' sent-image-card' : '');
+        card.type = 'button'; card.setAttribute('aria-label', own ? '查看我发送的图片' : '打开图片'); card.dataset.openImage = m.id; card.onclick = () => openImage(m, card, own);
         let preview;
-        try { preview = decryptImagePreview(m, self, selected.peer); card.append(paintImagePreview(preview)); }
+        try { if (!own) { preview = decryptImagePreview(m, self, selected.peer); card.append(paintImagePreview(preview)); } }
         catch { card.classList.add('flash-unavailable'); }
         finally { wipe(preview?.pixels); }
-        const label = document.createElement('span'); label.className = 'flash-label'; label.textContent = own ? '闪图 · 等待查看' : '闪图 · 点击查看';
-        const note = document.createElement('span'); note.className = 'flash-note'; note.textContent = '仅一次 · 3 秒';
+        const label = document.createElement('span'); label.className = 'flash-label'; label.textContent = own ? '我发送的图片' : '闪图 · 点击查看';
+        const note = document.createElement('span'); note.className = 'flash-note'; note.textContent = own ? '点击查看 · 不消耗对方次数' : '仅一次 · 3 秒';
         card.append(label, note); bubble.append(card);
+        if (own) queueMicrotask(() => { if (card.isConnected) observeSenderImage(m,card); });
       }
     }
     const meta = document.createElement('div'); meta.className = 'message-meta'; const time = document.createElement('span'); time.textContent = new Date(m.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -523,6 +617,7 @@ $('message-form').onsubmit = (event) => {
     // Keep the composer available while encrypted envelopes upload in order.
     void sendQueue.enqueue(message, context).then(() => {
       if (context.user !== self || context.generation !== generation) return;
+      if (context.acknowledged) return;
       void refreshMessages().catch(() => {
         const waiting = sendPreviews.get(message.id); if (waiting) waiting.status.textContent = '已发送，等待连接恢复';
       });
@@ -589,20 +684,34 @@ $('image-input').onchange = async () => {
   const file = $('image-input').files[0]; $('image-input').value = '';
   if (!file || !self || !selected || blocked || sending) return;
   if (!confirm('发送一次查看图片？对方打开后显示 3 秒，未打开最多保留 24 小时；无法阻止截图。GIF 将转换为静态图片。')) return;
-  const c = selected, user = self; sending = true; checkTrust(); let prepared;
+  const c = selected, user = self, epoch = generation; sending = true; checkTrust(); let prepared, message;
+  $('image-upload-status')?.remove();
+  const progress = document.createElement('p'); progress.id = 'image-upload-status'; progress.className = 'image-upload-status'; progress.setAttribute('role','status');
+  $('message-form').before(progress); $('image-button').setAttribute('aria-busy','true');
+  const stage = text => { if (self === user && selected?.id === c.id && generation === epoch) progress.textContent = text; };
   try {
-    prepared = await prepareImage(file); if (self !== user) return;
-    const message = encryptMessage(user, c.peer, c.id, b64(prepared.bytes), { type: 'image', ttlMs: Math.min(Number($('ttl').value), 86400000), mime: prepared.mime });
+    stage('正在压缩图片…'); await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    prepared = await prepareImage(file); if (self !== user || selected?.id !== c.id || generation !== epoch || androidPaused || webPaused) return;
+    stage('正在加密图片…'); await new Promise(resolve => setTimeout(resolve,0));
+    message = encryptMessage(user, c.peer, c.id, b64(prepared.bytes), { type: 'image', ttlMs: Math.min(Number($('ttl').value), 86400000), mime: prepared.mime });
     message.preview = encryptImagePreview(message, user, c.peer, c.id, prepared.preview);
-    await api(`/api/conversations/${c.id}/messages`, 'POST', message); if (selected?.id === c.id) await refreshMessages(); toast('图片已在本机压缩、加密并发送。');
-  } catch (error) { toast(error.message); } finally { wipe(prepared?.bytes); wipe(prepared?.preview?.pixels); sending = false; checkTrust(); }
+    cacheSentImage(message,{...message,conversationId:c.id,senderId:user.id});
+    stage('正在上传图片，请稍候…');
+    const version = appliedSyncVersion, context = {user,generation:epoch,conversationId:c.id};
+    const result = await api(`/api/conversations/${c.id}/messages`, 'POST', message);
+    if (self === user && generation === epoch && selected?.id === c.id) {
+      if (!acceptSentMessage(result,context,version)) await refreshMessages();
+      toast('图片已发送。');
+    }
+  } catch (error) { if (message) forgetSentImage(message.id); if (self === user && generation === epoch) toast(error.message); }
+  finally { progress.remove(); $('image-button').removeAttribute('aria-busy'); wipe(prepared?.bytes); wipe(prepared?.preview?.pixels); sending = false; checkTrust(); }
 };
-async function openImage(m, button) {
+async function openImage(m, button, own = false) {
   if (!self || !selected || blocked || viewingId || androidPaused || document.hidden) return;
-  const user = self, peer = selected.peer, c = selected.id, g = generation; button.disabled = true; viewingId = m.id;
+  const user = self, peer = selected.peer, c = selected.id, g = generation; button.disabled = true; viewingId = m.id; viewingOwn = own;
   button.setAttribute('aria-busy', 'true');
   try {
-    const envelope = await api('/api/messages/' + m.id + '/open', 'POST');
+    const envelope = own ? await senderImage(m) : await api('/api/messages/' + m.id + '/open', 'POST');
     if (self !== user || selected?.id !== c || androidPaused || document.hidden || generation !== g || viewingId !== m.id) return;
     const payload = decryptMessage(envelope, user, peer);
     if (!['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(payload.mime)) throw new Error('图片格式无效。');
@@ -611,7 +720,12 @@ async function openImage(m, button) {
     await $('view-image').decode();
     if (self !== user || selected?.id !== c || viewingId !== m.id || generation !== g) return;
     if (androidPaused || document.hidden || m.expiresAt <= Date.now()) { closeImage(); return; }
-    $('image-dialog').showModal();
+    $('image-dialog').querySelector('h2').textContent = own ? '我发送的图片' : '仅此一次'; $('image-dialog').showModal();
+    if (own) {
+      $('image-countdown').textContent = '我发送的图片 · 对方查看或消息到期后清理';
+      imageTimer = setInterval(() => { if (m.expiresAt <= Date.now()) closeImage(true); },200);
+      return;
+    }
     const deadline = Math.min(Date.now() + 3_000, m.expiresAt);
     const tick = () => { const seconds = Math.max(0, Math.ceil((deadline - Date.now()) / 1000)); $('image-countdown').textContent = `${seconds} 秒后关闭`; if (!seconds) closeImage(true); };
     tick(); imageTimer = setInterval(tick, 200); await refreshMessages();
@@ -627,7 +741,7 @@ function closeImage(animate = false) {
   cancelImageDissolve?.(); cancelImageDissolve = null;
   const image = $('view-image'), dialog = $('image-dialog'); const visible = dialog.open && Boolean(imageUrl);
   image.removeAttribute('src'); image.removeAttribute('srcset');
-  if (imageUrl) URL.revokeObjectURL(imageUrl); imageUrl = null; viewingId = null;
+  if (imageUrl) URL.revokeObjectURL(imageUrl); imageUrl = null; viewingId = null; viewingOwn = false;
   if (animate === true && visible && !androidPaused && !document.hidden) {
     $('image-countdown').textContent = '图片已销毁';
     cancelImageDissolve = dissolveViewOnceImage(image, { onComplete: () => { cancelImageDissolve = null; dialog.close(); } });
@@ -639,7 +753,17 @@ if (android) {
     const toggle = $('background-connection'); toggle.hidden = self?.role !== 'member';
     toggle.setAttribute('aria-checked', String(enabled)); $('background-connection-status').textContent = enabled ? '已开启' : '已关闭';
   };
-  $('background-connection').onclick = () => { void realtime?.enableBackground?.($('background-connection').getAttribute('aria-checked') !== 'true'); };
+  $('background-connection').onclick = async () => {
+    const toggle = $('background-connection'); if (toggle.disabled) return;
+    const enabled = toggle.getAttribute('aria-checked') !== 'true', user = self;
+    toggle.disabled = true; toggle.setAttribute('aria-busy','true');
+    try {
+      startRealtime();
+      if (!realtime?.enableBackground) throw Error('后台连接暂未就绪，请稍后重试。');
+      if (!await realtime.enableBackground(enabled)) throw Error('设置暂未完成，请稍后重试。');
+    } catch (error) { if (self === user) toast(error.message || '设置未成功，请重试。'); }
+    finally { toggle.disabled = false; toggle.removeAttribute('aria-busy'); }
+  };
   const leaveChat = (view) => {
     generation++; syncCursor = null; suspendedReading = null; closeImage(); $('safety-dialog').close(); selected = null; clearMessageView();
     $('message-input').value = ''; $('conversation-panel').hidden = true; $('empty-state').hidden = false;
