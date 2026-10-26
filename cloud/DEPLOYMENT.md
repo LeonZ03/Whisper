@@ -30,7 +30,7 @@ Windows / Linux 默认安装命令分别缩短至 85 / 164 字符；同源 boots
 
 本地基础 80 项通过、2 项 Linux 专属跳过；实时 37 项、云端 19 项、网页完整回归 28 项通过。Android 当前实际打包资源的桥接模拟 1 项、APK 结构 3 项及宿主原生 SDK 35 / API 26 D8 检查通过，含前后台、开关重复切换、自看不消费和三秒领取；不等同 Android ART 真机。本轮未接到手机，所有者选择在 App 内更新，不执行 USB 安装。Windows 安装 6 项、真实 PowerShell / ConPTY 3 项和隔离自更新通过；Linux x64 安装 / 升级 / 重装 / 损坏拒绝 / 卸载、真实安装版 PTY、隔离自更新通过，Linux bootstrap 8 项全通过。ARM64 只有归档哈希 / ELF 检查。Windows 卸载用稳定的非 PATH helper 避免删除正在执行的启动器后误报失败，实际验证调用者继续执行；保留 data 和小 helper。Linux 初次隔离测试的 localhost 请求被宿主代理返回 502，限定测试子进程 NO_PROXY 后通过，没有更改全局配置。
 
-原签名 APK：`whisper-android-0.6.4-r1.apk`，版本码 60401，324634 字节，SHA-256 `ec55f9d7c638aaf4c42aaac480d4a319285a78942444285ac37b3516e8f3724f`；证书 SHA-256 仍为 `b8c332b8d7f2821ebe9d687aa82eaf309278e242ad2c2d6c2820b78c3f089c0e`。GitHub 已准备 APK 草稿，本段不代表公开发布或正式站已更新；固定公开元数据仍是 0.6.3，发布后先校验新资产，再固定清单并推送 main 触发代码部署。
+原签名 APK：`whisper-android-0.6.4-r1.apk`，版本码 60401，324634 字节，SHA-256 `ec55f9d7c638aaf4c42aaac480d4a319285a78942444285ac37b3516e8f3724f`；证书 SHA-256 仍为 `b8c332b8d7f2821ebe9d687aa82eaf309278e242ad2c2d6c2820b78c3f089c0e`。功能提交 `b007e5a53e26fa01cd404c0194831606438db6e0` 和 `v0.6.4` 标签已保存；SSH 连接超时后通过现有 HTTPS Git 认证推送标签，没有改远端配置。通过侧边浏览器公开发布 [GitHub Release v0.6.4](https://github.com/LeonZ03/Whisper/releases/tag/v0.6.4)，唯一 APK 资产的大小和 GitHub SHA-256 一致；随后用已有 Git 本机代理线路在空临时目录实际下载并校验，未使用本地包或缓存。固定公开元数据已更新为同一 APK，正在重新构建并准备 main 推送；正式站仍须推送后核验。
 
 ### 0.6.3 闪图与 Android 后台连接（2026-10-23 已部署，真机待验证）
 

@@ -1,12 +1,12 @@
 {
-  "version": "0.6.3",
+  "version": "0.6.4",
   "build": 1,
-  "versionCode": 60301,
+  "versionCode": 60401,
   "applicationId": "org.leonz.whisper",
   "minAndroid": "8.0",
   "server": "https://whisper.leonz03.dpdns.org",
-  "filename": "whisper-android-0.6.3-r1.apk",
-  "bytes": 320538,
-  "sha256": "4b8a2955e3c1f5012b6c97ec06abf525ddea7d13c7d41ff7bfab10d13d335000",
+  "filename": "whisper-android-0.6.4-r1.apk",
+  "bytes": 324634,
+  "sha256": "ec55f9d7c638aaf4c42aaac480d4a319285a78942444285ac37b3516e8f3724f",
   "resourcesStoredAndAligned": true
 }
